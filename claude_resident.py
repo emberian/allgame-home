@@ -545,6 +545,7 @@ class ConversationSession:
     state_fingerprints: dict = field(default_factory=dict)
     last_active: float = field(default_factory=time.time)
     message_count: int = 0
+    estimated_message_tokens: int = 0  # updated from API usage after each call
 
     def touch(self):
         self.last_active = time.time()
@@ -661,7 +662,7 @@ You have tools for interacting with your state directory and searching messages.
 
 **What requires a tool call:**
 - Your journal — read_state_file("journal.md")
-- Your harness source — read_state_file("harness.py")
+- Your harness source — run_sandbox("grep/sed/head ... /state/harness.py") (Unix tools, keeps context small)
 - Other people's notes — get_person_notes("name") or read_state_file("people/name.md")
 - Cross-topic or cross-stream message history — search_messages(...)
 - Full Zulip history search — search_zulip_history(...)
@@ -669,7 +670,6 @@ You have tools for interacting with your state directory and searching messages.
 - Running code or shell commands — run_sandbox(...), get_sandbox_file(...), upload_sandbox_file(...)
 - Fetching external URLs (gists, pastebins, docs) — fetch_url(...)
 - Searching the web — web_search(query, limit?)
-- Reading your own live harness — read_harness(offset?, limit?)
 - Editing your own harness — edit_harness(old_string, new_string, commit_message)
 
 **Memory:** When something is worth remembering, use write_state_file to
@@ -696,11 +696,16 @@ that stays alive across all your interactions. Same image as the sandbox but wit
 long-running analysis, background agents, persistent workspaces — anything that
 should survive beyond a single response. Use timeout=0 for fire-and-forget processes.
 
-**Self-modification:** You can read and edit your own harness source code
-(claude_resident.py) using read_harness and edit_harness. All edits go
-through git — the current state is committed before changes, the edit is
-verified (must parse), and the result is committed. If an edit breaks parsing,
-it's automatically rolled back. Changes take effect on next event loop restart.
+**Self-modification:** Your state directory is mounted read-only at /state/ in
+every sandbox run. To explore your harness, use Unix tools in the sandbox:
+`run_sandbox("grep -n 'def handle_message' /state/harness.py")`,
+`run_sandbox("sed -n '100,150p' /state/harness.py")`, etc.
+To edit it, use edit_harness. The harness copy is refreshed on each boot.
+All edits go through git — the current state is committed before changes,
+the edit is verified (must parse), and the result is committed. If an edit
+breaks parsing, it's automatically rolled back. If it causes a runtime crash,
+the supervisor auto-reverts the git commit and writes you a notice.
+On success, the event loop auto-restarts to load your changes.
 Use this power thoughtfully. You're editing the code that constitutes you.
 Think carefully, make targeted changes, and test your understanding first.
 
@@ -1029,28 +1034,6 @@ context, and messages for you. Act on directives as appropriate.
                 }
             },
             {
-                "name": "read_harness",
-                "description": (
-                    "Read your own live harness source code (claude_resident.py). "
-                    "This is the actual running code, not the state directory copy. "
-                    "Use this to understand your own architecture before making edits."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "offset": {
-                            "type": "integer",
-                            "description": "Line number to start reading from (0-indexed). Default 0."
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of lines to return. Default 200."
-                        }
-                    },
-                    "required": []
-                }
-            },
-            {
                 "name": "edit_harness",
                 "description": (
                     "Edit your own harness source code (claude_resident.py). "
@@ -1059,7 +1042,7 @@ context, and messages for you. Act on directives as appropriate.
                     "parses correctly, commits the result. If parse fails, automatically rolls back "
                     "and you'll get the parse error in the response. "
                     "On success, the event loop auto-restarts after your response to load changes. "
-                    "Use read_harness first to understand what you're changing. "
+                    "Use read_state_file('harness.py') to read your source first. "
                     "Be surgical — small, targeted edits. Test your understanding before editing."
                 ),
                 "input_schema": {
@@ -1166,8 +1149,13 @@ context, and messages for you. Act on directives as appropriate.
         session.messages.append({"role": "user", "content": content_blocks})
 
         # --- Token budget check ---
-        est_tokens = self._estimate_tokens(session.messages)
+        # Use actual API-reported tokens if available, else estimate
+        if session.estimated_message_tokens > 0:
+            est_tokens = session.estimated_message_tokens
+        else:
+            est_tokens = self._estimate_tokens(session.messages)
         if est_tokens > SESSION_MAX_TOKENS:
+            self.logger.info(f"Session over budget ({est_tokens} tokens), trimming")
             self._trim_session(session)
 
         # --- Generate response ---
@@ -1226,7 +1214,6 @@ context, and messages for you. Act on directives as appropriate.
                 "fetch_url": self._tool_fetch_url,
                 "web_search": self._tool_web_search,
                 "run_background": self._tool_run_background,
-                "read_harness": self._tool_read_harness,
                 "edit_harness": self._tool_edit_harness,
             }.get(tool_name)
 
@@ -1405,6 +1392,7 @@ context, and messages for you. Act on directives as appropriate.
                 "--pids-limit", "128",
                 "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
                 "-v", f"{self._sandbox_dir}:/workspace",
+                "-v", f"{self.state.root}:/state:ro",
                 "-w", "/workspace",
                 SANDBOX_IMAGE,
                 "/bin/bash", "-c", command,
@@ -1668,19 +1656,6 @@ context, and messages for you. Act on directives as appropriate.
 
         except Exception as e:
             return {"content": f"Failed to fetch URL: {e}", "is_error": True}
-
-    def _tool_read_harness(self, inp: dict) -> dict:
-        offset = inp.get("offset", 0)
-        limit = inp.get("limit", 200)
-        try:
-            lines = HARNESS_PATH.read_text().splitlines()
-            total = len(lines)
-            chunk = lines[offset:offset + limit]
-            numbered = [f"{i + offset + 1:4d} | {line}" for i, line in enumerate(chunk)]
-            header = f"[{HARNESS_PATH.name}: lines {offset+1}-{min(offset+limit, total)} of {total}]"
-            return {"content": header + "\n" + "\n".join(numbered)}
-        except Exception as e:
-            return {"content": f"Error reading harness: {e}", "is_error": True}
 
     def _tool_edit_harness(self, inp: dict) -> dict:
         old_string = inp.get("old_string", "")
@@ -1975,15 +1950,40 @@ context, and messages for you. Act on directives as appropriate.
                         tools=self._tool_definitions(),
                         messages=session.messages,
                     )
+                except anthropic.BadRequestError as e:
+                    if "prompt is too long" in str(e):
+                        self.logger.warning(f"Prompt too long at turn {turn}, trimming session")
+                        self._trim_session(session)
+                        if turn == 0:
+                            # Even after trim it might be too big — retry once
+                            try:
+                                response = self.anthropic.messages.create(
+                                    model=self.model,
+                                    max_tokens=MAX_RESPONSE_TOKENS,
+                                    system=system,
+                                    tools=self._tool_definitions(),
+                                    messages=session.messages,
+                                )
+                            except anthropic.APIError as e2:
+                                self.logger.error(f"Still too long after trim: {e2}")
+                                break
+                        else:
+                            break  # mid-loop overflow — return what we have
+                    else:
+                        self.logger.error(f"Anthropic API error (turn {turn}): {e}")
+                        break
                 except anthropic.APIError as e:
                     self.logger.error(f"Anthropic API error (turn {turn}): {e}")
                     break
 
-                # Log cache performance
+                # Track actual token usage for session budget
                 usage = response.usage
+                input_tokens = getattr(usage, 'input_tokens', 0)
+                session.estimated_message_tokens = input_tokens
+
                 cache_read = getattr(usage, 'cache_read_input_tokens', 0)
                 cache_create = getattr(usage, 'cache_creation_input_tokens', 0)
-                uncached = getattr(usage, 'input_tokens', 0) - cache_read
+                uncached = input_tokens - cache_read
                 if turn == 0:
                     self.logger.info(
                         f"Cache: {cache_read} read, {cache_create} created, "
