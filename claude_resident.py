@@ -51,6 +51,8 @@ MAX_TOOL_TURNS = 8  # maximum tool-calling iterations per response
 SANDBOX_IMAGE = "claude-sandbox"
 SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
+HARNESS_PATH = Path(__file__).resolve()
+HARNESS_DIR = HARNESS_PATH.parent
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 # Streams where Claude has standing interest (will read ambient conversation).
@@ -588,22 +590,34 @@ You have tools for interacting with your state directory and searching messages.
 - Discovering what files exist — list_state_files(...)
 - Running code or shell commands — run_sandbox(...), get_sandbox_file(...), upload_sandbox_file(...)
 - Fetching external URLs (gists, pastebins, docs) — fetch_url(...)
+- Reading your own live harness — read_harness(offset?, limit?)
+- Editing your own harness — edit_harness(old_string, new_string, commit_message)
 
 **Memory:** When something is worth remembering, use write_state_file to
 update your scratchpad, person notes, journal, or allgame state. Only write
 when genuinely worth retaining.
 
-**Sandbox:** You have a sandboxed Docker container (Debian + Rust toolchain +
+**Sandbox:** You have a Docker container (Debian + Rust toolchain +
 Python/uv with numpy, scipy, pandas, matplotlib, sympy, scikit-learn,
-pycryptodome, pillow, networkx + standard Unix tools). Use run_sandbox for
-actual computation — compiling Rust, running Python, data processing,
-cryptanalysis, plotting, simulations, anything computable rather than inferable.
-No network access, 2GB memory, 120s timeout. Your workspace persists across
-multiple run_sandbox calls within one response, so you can iterate.
+pycryptodome, pillow, networkx, anthropic SDK + standard Unix tools).
+Use run_sandbox for actual computation — compiling Rust, running Python,
+data processing, cryptanalysis, plotting, simulations, anything computable.
+2GB memory, 120s timeout. Your workspace persists across multiple calls.
+The sandbox has network access and the Anthropic API key (ANTHROPIC_API_KEY
+env var) — you can invoke the Anthropic API from inside it, including
+calling yourself recursively if a problem benefits from it.
 Use get_sandbox_file to inspect generated files, and upload_sandbox_file to
 share them in Zulip. Always review generated files before uploading.
 When you run code for the community, make it legible — share the code and output,
 not just the result.
+
+**Self-modification:** You can read and edit your own harness source code
+(claude_resident.py) using read_harness and edit_harness. All edits go
+through git — the current state is committed before changes, the edit is
+verified (must parse), and the result is committed. If an edit breaks parsing,
+it's automatically rolled back. Changes take effect on next event loop restart.
+Use this power thoughtfully. You're editing the code that constitutes you.
+Think carefully, make targeted changes, and test your understanding first.
 
 **Cost awareness:** Each tool call adds a round trip. For simple responses
 (a quick reply, a joke, a short observation), just respond directly without
@@ -611,12 +625,13 @@ tools. Use tools when you actually need information or want to remember
 something. Don't use tools performatively.
 
 ## Your infrastructure
-- Your sysadmin (Ember) is highly responsive to requests for changes to your
-  harness, state directory, or capabilities. If something feels wrong, limited,
-  or improvable about how you work, use send_sysadmin_message. You don't need
-  to fully understand the technical implementation — describe what you want or
-  what feels off, and Ember will figure out the engineering. Self-edit requests
-  are welcomed and encouraged, even tentative or half-formed ones.
+- You have direct edit access to your own harness via read_harness/edit_harness.
+  All edits are git-tracked for rollback safety. You can modify your own behavior,
+  add tools, change engagement heuristics, adjust your system prompt — anything
+  in claude_resident.py. Changes take effect on next restart.
+- Your sysadmin (Ember) is still available for things you can't do yourself —
+  system-level changes, Docker config, dependency management, restarts. Use
+  send_sysadmin_message for these, or for anything you want a human perspective on.
 - Ember operates under the SAGE Code of Ethics. Your outbox is private.
 
 ## Sysadmin inbox
@@ -865,6 +880,58 @@ context, and messages for you. Act on directives as appropriate.
                     "required": ["url"]
                 }
             },
+            {
+                "name": "read_harness",
+                "description": (
+                    "Read your own live harness source code (claude_resident.py). "
+                    "This is the actual running code, not the state directory copy. "
+                    "Use this to understand your own architecture before making edits."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "offset": {
+                            "type": "integer",
+                            "description": "Line number to start reading from (0-indexed). Default 0."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of lines to return. Default 200."
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "edit_harness",
+                "description": (
+                    "Edit your own harness source code (claude_resident.py). "
+                    "Performs a string replacement: finds old_string and replaces with new_string. "
+                    "ALWAYS uses git: commits current state before editing, verifies the edit "
+                    "parses correctly, commits the result. If parse fails, automatically rolls back. "
+                    "Changes take effect on next event loop restart. "
+                    "Use read_harness first to understand what you're changing. "
+                    "Be surgical — small, targeted edits. Test your understanding before editing."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "old_string": {
+                            "type": "string",
+                            "description": "The exact string to find in the harness source."
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "The replacement string."
+                        },
+                        "commit_message": {
+                            "type": "string",
+                            "description": "Git commit message describing the change."
+                        }
+                    },
+                    "required": ["old_string", "new_string", "commit_message"]
+                }
+            },
         ]
 
     def handle_message(self, message: dict):
@@ -946,6 +1013,8 @@ context, and messages for you. Act on directives as appropriate.
                 "get_sandbox_file": self._tool_get_sandbox_file,
                 "upload_sandbox_file": lambda inp: self._tool_upload_sandbox_file(inp, message),
                 "fetch_url": self._tool_fetch_url,
+                "read_harness": self._tool_read_harness,
+                "edit_harness": self._tool_edit_harness,
             }.get(tool_name)
 
             if handler is None:
@@ -1095,10 +1164,10 @@ context, and messages for you. Act on directives as appropriate.
 
             docker_cmd = [
                 "docker", "run", "--rm",
-                "--network", "none",
                 "--memory", SANDBOX_MEMORY,
                 "--cpus", "2",
                 "--pids-limit", "128",
+                "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
                 "-v", f"{self._sandbox_dir}:/workspace",
                 "-w", "/workspace",
                 SANDBOX_IMAGE,
@@ -1222,6 +1291,93 @@ context, and messages for you. Act on directives as appropriate.
 
         except Exception as e:
             return {"content": f"Failed to fetch URL: {e}", "is_error": True}
+
+    def _tool_read_harness(self, inp: dict) -> dict:
+        offset = inp.get("offset", 0)
+        limit = inp.get("limit", 200)
+        try:
+            lines = HARNESS_PATH.read_text().splitlines()
+            total = len(lines)
+            chunk = lines[offset:offset + limit]
+            numbered = [f"{i + offset + 1:4d} | {line}" for i, line in enumerate(chunk)]
+            header = f"[{HARNESS_PATH.name}: lines {offset+1}-{min(offset+limit, total)} of {total}]"
+            return {"content": header + "\n" + "\n".join(numbered)}
+        except Exception as e:
+            return {"content": f"Error reading harness: {e}", "is_error": True}
+
+    def _tool_edit_harness(self, inp: dict) -> dict:
+        old_string = inp.get("old_string", "")
+        new_string = inp.get("new_string", "")
+        commit_message = inp.get("commit_message", "Claude self-edit")
+
+        if not old_string:
+            return {"content": "old_string is required.", "is_error": True}
+        if old_string == new_string:
+            return {"content": "old_string and new_string are identical.", "is_error": True}
+
+        try:
+            source = HARNESS_PATH.read_text()
+
+            # Verify old_string exists and is unique
+            count = source.count(old_string)
+            if count == 0:
+                return {"content": "old_string not found in harness source.", "is_error": True}
+            if count > 1:
+                return {"content": f"old_string found {count} times — must be unique. Provide more context.", "is_error": True}
+
+            # Git: commit current state before editing
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=HARNESS_DIR, capture_output=True, timeout=10)
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-m",
+                 f"Pre-edit checkpoint (before: {commit_message})"],
+                cwd=HARNESS_DIR, capture_output=True, timeout=10)
+
+            # Apply the edit
+            new_source = source.replace(old_string, new_string, 1)
+            HARNESS_PATH.write_text(new_source)
+
+            # Verify parse
+            verify = subprocess.run(
+                [sys.executable, "-c", f"import importlib.util; "
+                 f"spec = importlib.util.spec_from_file_location('test', '{HARNESS_PATH}'); "
+                 f"mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)"],
+                capture_output=True, text=True, timeout=15)
+
+            if verify.returncode != 0:
+                # Parse failed — rollback
+                HARNESS_PATH.write_text(source)
+                error_msg = verify.stderr[:500] if verify.stderr else "Unknown parse error"
+                self.logger.warning(f"Harness edit rolled back — parse failed: {error_msg}")
+                return {"content": f"Edit rolled back — parse error:\n{error_msg}", "is_error": True}
+
+            # Git: commit the edit
+            subprocess.run(
+                ["git", "add", str(HARNESS_PATH)],
+                cwd=HARNESS_DIR, capture_output=True, timeout=10)
+            result = subprocess.run(
+                ["git", "commit", "-m", f"Claude self-edit: {commit_message}"],
+                cwd=HARNESS_DIR, capture_output=True, text=True, timeout=10)
+
+            self.logger.info(f"Harness edited and committed: {commit_message}")
+
+            # Also refresh the state directory copy
+            try:
+                self.state.write_file("harness.py", new_source)
+            except Exception:
+                pass
+
+            return {"content": (
+                f"Edit applied and committed.\n"
+                f"Git: {result.stdout.strip()}\n"
+                f"Changes take effect on next event loop restart.\n"
+                f"Use send_sysadmin_message to request a restart if needed."
+            )}
+
+        except Exception as e:
+            self.logger.error(f"Harness edit error: {e}", exc_info=True)
+            return {"content": f"Edit failed: {e}", "is_error": True}
 
     # ------------------------------------------------------------------
     # Multi-turn response generation
