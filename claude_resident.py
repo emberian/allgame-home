@@ -1258,9 +1258,8 @@ context, and messages for you. Act on directives as appropriate.
         # Enforce append-only files
         basename = path.split("/")[-1] if "/" in path else path
         if basename in self.APPEND_ONLY_FILES and action == "replace":
-            return {"content": f"Blocked: {path} is append-only. Use action='append'. "
-                    f"This is enforced structurally because you've proven you can't be trusted "
-                    f"with replace on your own journal.", "is_error": True}
+            return {"content": f"Blocked: {path} is append-only by design. Use action='append'.",
+                    "is_error": True}
         self.logger.info(f"Tool state write: {action} {path} ({len(content)} chars)")
         # On replace, capture previous content so the model sees what it's overwriting
         previous = None
