@@ -27,6 +27,7 @@ import hashlib
 import argparse
 import tempfile
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -53,6 +54,11 @@ SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
 BG_CONTAINER_NAME = "claude-bg"
 BG_CONTAINER_MEMORY = "512m"
+SESSION_TTL = 300  # seconds — matches Anthropic cache TTL
+SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
+SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
+SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
+MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
 HARNESS_PATH = Path(__file__).resolve()
 HARNESS_DIR = HARNESS_PATH.parent
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -526,6 +532,76 @@ class EngagementJudge:
 
 
 # ---------------------------------------------------------------------------
+# Conversation sessions (per-topic KV cache optimization)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ConversationSession:
+    """Persistent conversation state for a (stream, topic) pair."""
+    stream: str
+    topic: str
+    messages: list = field(default_factory=list)
+    system_blocks: list = field(default_factory=list)
+    state_fingerprints: dict = field(default_factory=dict)
+    last_active: float = field(default_factory=time.time)
+    message_count: int = 0
+
+    def touch(self):
+        self.last_active = time.time()
+
+    @property
+    def age_seconds(self) -> float:
+        return time.time() - self.last_active
+
+
+class SessionManager:
+    """Manages per-topic conversation sessions with TTL eviction."""
+
+    def __init__(self):
+        self._sessions: dict[tuple[str, str], ConversationSession] = {}
+        self.logger = logging.getLogger("session_manager")
+
+    def get(self, stream: str, topic: str) -> Optional[ConversationSession]:
+        """Get an existing session if it exists and hasn't expired."""
+        key = (stream, topic)
+        session = self._sessions.get(key)
+        if session is None:
+            return None
+        if session.age_seconds > SESSION_TTL:
+            self.logger.info(f"Session expired: #{stream}>{topic} "
+                             f"(idle {session.age_seconds:.0f}s)")
+            del self._sessions[key]
+            return None
+        return session
+
+    def create(self, stream: str, topic: str) -> ConversationSession:
+        """Create a new session, evicting old ones if needed."""
+        self._evict_if_needed()
+        session = ConversationSession(stream=stream, topic=topic)
+        self._sessions[(stream, topic)] = session
+        self.logger.info(f"Session created: #{stream}>{topic}")
+        return session
+
+    def remove(self, stream: str, topic: str):
+        """Explicitly remove a session (e.g., on error)."""
+        key = (stream, topic)
+        if key in self._sessions:
+            del self._sessions[key]
+            self.logger.info(f"Session removed: #{stream}>{topic}")
+
+    def _evict_if_needed(self):
+        """Remove expired sessions and LRU if over max count."""
+        expired = [k for k, s in self._sessions.items()
+                   if s.age_seconds > SESSION_TTL]
+        for k in expired:
+            del self._sessions[k]
+        while len(self._sessions) >= SESSION_MAX_COUNT:
+            oldest = min(self._sessions, key=lambda k: self._sessions[k].last_active)
+            self.logger.info(f"Evicting LRU session: #{oldest[0]}>{oldest[1]}")
+            del self._sessions[oldest]
+
+
+# ---------------------------------------------------------------------------
 # Response generation
 # ---------------------------------------------------------------------------
 
@@ -633,6 +709,14 @@ Think carefully, make targeted changes, and test your understanding first.
 tools. Use tools when you actually need information or want to remember
 something. Don't use tools performatively.
 
+**Conversation continuity:** Your conversation context persists within a topic.
+If you already responded in a topic, your next response in the same topic
+carries forward the full conversation — your previous tool calls, their results,
+and everything you said. You don't need to re-read state files you already
+loaded in the same topic. If you wrote to your scratchpad in a previous response,
+the update will be injected as a context delta. Sessions expire after 5 minutes
+of inactivity, at which point the next message starts fresh.
+
 ## Your infrastructure
 - You have direct edit access to your own harness via read_harness/edit_harness.
   All edits are git-tracked for rollback safety. You can modify your own behavior,
@@ -658,6 +742,7 @@ context, and messages for you. Act on directives as appropriate.
         self.model = model
         self.last_response_time = 0
         self._sandbox_dir = None  # persistent workspace for current response loop
+        self.sessions = SessionManager()
         self.logger = logging.getLogger("claude_resident")
 
     # ------------------------------------------------------------------
@@ -997,7 +1082,7 @@ context, and messages for you. Act on directives as appropriate.
         ]
 
     def handle_message(self, message: dict):
-        """Process an incoming Zulip message."""
+        """Process an incoming Zulip message with per-topic session persistence."""
         # Extract stream/topic info
         msg_type = message.get("type", "stream")
         if msg_type == "stream":
@@ -1005,7 +1090,7 @@ context, and messages for you. Act on directives as appropriate.
             topic = message.get("subject", "")
         else:
             stream = "dm"
-            topic = ""
+            topic = message.get("sender_email", "unknown")
 
         sender = message.get("sender_full_name", "unknown")
         content = message.get("content", "")
@@ -1026,12 +1111,71 @@ context, and messages for you. Act on directives as appropriate.
 
         self.logger.info(f"Responding to {sender} in #{stream}>{topic}")
 
-        # Build reduced context and generate response with tools
-        system = self._build_tool_system_prompt(stream, topic, message)
+        # --- Session lookup ---
+        session = self.sessions.get(stream, topic)
+        is_first_message = session is None
+        if is_first_message:
+            session = self.sessions.create(stream, topic)
+        session.touch()
+        session.message_count += 1
+
+        # --- Fingerprint current state ---
+        new_fingerprints = self._fingerprint_state(stream, sender)
+
+        # --- Staleness check: too many diverged files → reset session ---
+        if not is_first_message:
+            tier23_keys = {"identity", "scratchpad", "inbox"}
+            if stream.lower() == "allgame":
+                tier23_keys |= {"allgame/faction.md", "allgame/campaign_log.md",
+                                "allgame/strategy.md"}
+            stale_count = sum(
+                1 for k in tier23_keys
+                if session.state_fingerprints.get(k) != new_fingerprints.get(k))
+            if stale_count > MAX_STALE_FILES:
+                self.logger.info(f"Session reset: {stale_count} stale files exceed threshold")
+                self.sessions.remove(stream, topic)
+                session = self.sessions.create(stream, topic)
+                session.touch()
+                session.message_count = 1
+                is_first_message = True
+
+        # --- Build system prompt ---
+        if is_first_message:
+            system = self._build_tiered_system_prompt(
+                stream, topic, message, is_first_message=True)
+            session.system_blocks = system
+        else:
+            # Reuse exact same system blocks — preserves KV cache prefix
+            system = session.system_blocks
+
+        # --- Build user message ---
         content_blocks = self._build_content_blocks(f"{sender}: {content}")
 
-        response_text = self._generate_response_with_tools(
-            system, content_blocks, stream, topic, sender, message)
+        # On warm path, prepend state deltas if anything changed
+        if not is_first_message:
+            delta_text = self._compute_state_deltas(
+                session, new_fingerprints, stream, sender)
+            if delta_text:
+                content_blocks = [{"type": "text", "text": delta_text}] + content_blocks
+
+        session.state_fingerprints = new_fingerprints
+
+        # --- Append user message to session ---
+        session.messages.append({"role": "user", "content": content_blocks})
+
+        # --- Token budget check ---
+        est_tokens = self._estimate_tokens(session.messages)
+        if est_tokens > SESSION_MAX_TOKENS:
+            self._trim_session(session)
+
+        # --- Generate response ---
+        try:
+            response_text = self._generate_response_with_tools_session(
+                system, session, stream, topic, sender, message)
+        except Exception as e:
+            self.logger.error(f"Response generation failed: {e}", exc_info=True)
+            self.sessions.remove(stream, topic)
+            return
 
         if not response_text or not response_text.strip():
             self.logger.warning("Empty response generated, skipping")
@@ -1051,6 +1195,9 @@ context, and messages for you. Act on directives as appropriate.
         # Post response
         if clean_response.strip():
             self._post_response(message, clean_response.strip())
+
+        # Log Claude's response to topic history
+        self.state.log_message(stream, topic, "Claude", clean_response.strip(), timestamp)
 
         self.last_response_time = time.time()
 
@@ -1608,63 +1755,209 @@ context, and messages for you. Act on directives as appropriate.
             return {"content": f"Edit failed: {e}", "is_error": True}
 
     # ------------------------------------------------------------------
-    # Multi-turn response generation
+    # Session helpers (fingerprinting, deltas, cache control, trimming)
     # ------------------------------------------------------------------
 
-    def _build_tool_system_prompt(self, stream: str, topic: str, message: dict) -> list[dict]:
-        """Build structured system prompt with preloaded context for tool-calling mode."""
-        sections = []
+    def _fingerprint_state(self, stream: str, sender: str) -> dict[str, str]:
+        """Compute MD5 hashes of state files relevant to current context."""
+        fingerprints = {}
+        for name, path in [("identity", "identity.md"),
+                           ("scratchpad", "scratchpad.md"),
+                           ("inbox", "sysadmin_inbox.md")]:
+            content = self.state.read_file(path)
+            if content:
+                fingerprints[name] = hashlib.md5(content.encode()).hexdigest()
+        if stream.lower() == "allgame":
+            for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+                content = self.state.read_file(f"allgame/{fname}")
+                if content:
+                    fingerprints[f"allgame/{fname}"] = hashlib.md5(
+                        content.encode()).hexdigest()
+        person_path = f"people/{_safe_filename(sender)}.md"
+        content = self.state.read_file(person_path)
+        if content:
+            fingerprints[f"person/{sender}"] = hashlib.md5(
+                content.encode()).hexdigest()
+        return fingerprints
 
-        # Core identity (always)
+    def _compute_state_deltas(self, session: ConversationSession,
+                               new_fingerprints: dict[str, str],
+                               stream: str, sender: str) -> str:
+        """Compare fingerprints and return <context_updates> XML or empty string."""
+        old = session.state_fingerprints
+        changed = []
+        file_map = {
+            "identity": "identity.md",
+            "scratchpad": "scratchpad.md",
+            "inbox": "sysadmin_inbox.md",
+        }
+        for key, new_hash in new_fingerprints.items():
+            if old.get(key) != new_hash:
+                if key in file_map:
+                    content = self.state.read_file(file_map[key])
+                elif key.startswith("allgame/"):
+                    content = self.state.read_file(key)
+                elif key.startswith("person/"):
+                    name = key.split("/", 1)[1]
+                    content = self.state.read_file(f"people/{_safe_filename(name)}.md")
+                else:
+                    continue
+                if content:
+                    changed.append(f'<updated_state file="{key}">\n{content}\n</updated_state>')
+        for key in old:
+            if key not in new_fingerprints:
+                changed.append(f'<updated_state file="{key}">[removed]</updated_state>')
+        if not changed:
+            return ""
+        return ("<context_updates>\nThe following state files changed since your "
+                "last response in this topic:\n\n"
+                + "\n\n".join(changed) + "\n</context_updates>")
+
+    @staticmethod
+    def _set_last_user_cache_control(messages: list[dict]):
+        """Add cache_control to the last user message's last content block."""
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                content = messages[i].get("content")
+                if isinstance(content, list) and content:
+                    last_block = content[-1]
+                    if isinstance(last_block, dict):
+                        last_block["cache_control"] = {"type": "ephemeral"}
+                elif isinstance(content, str):
+                    messages[i]["content"] = [{
+                        "type": "text", "text": content,
+                        "cache_control": {"type": "ephemeral"},
+                    }]
+                break
+
+    @staticmethod
+    def _clear_user_cache_control(messages: list[dict]):
+        """Strip cache_control from all user message blocks."""
+        for msg in messages:
+            if msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            block.pop("cache_control", None)
+
+    def _trim_session(self, session: ConversationSession):
+        """Trim a session that exceeds token budget.
+
+        Keeps the first user message (initial context) and the last
+        SESSION_TRIM_PAIRS user/assistant pairs, with an elision marker.
+        """
+        msgs = session.messages
+        keep_count = SESSION_TRIM_PAIRS * 2
+        if len(msgs) <= keep_count + 2:
+            return
+        first_msg = msgs[0]
+        recent = msgs[-keep_count:]
+        elided = len(msgs) - 1 - keep_count
+        marker = {"role": "user", "content": [{"type": "text", "text":
+            f"[{elided} earlier messages elided to stay within context limits.]"}]}
+        marker_resp = {"role": "assistant", "content": [{"type": "text", "text":
+            "Understood, continuing from recent context."}]}
+        session.messages = [first_msg, marker, marker_resp] + recent
+        self.logger.info(f"Trimmed session #{session.stream}>{session.topic}: "
+                         f"elided {elided} messages, kept {len(session.messages)}")
+
+    @staticmethod
+    def _estimate_tokens(obj) -> int:
+        """Rough token estimate: ~4 chars per token."""
+        if isinstance(obj, str):
+            return len(obj) // 4
+        if isinstance(obj, dict):
+            return sum(ClaudeResident._estimate_tokens(v) for v in obj.values())
+        if isinstance(obj, list):
+            return sum(ClaudeResident._estimate_tokens(item) for item in obj)
+        if hasattr(obj, 'text'):
+            return len(getattr(obj, 'text', '')) // 4
+        return 0
+
+    # ------------------------------------------------------------------
+    # Session-aware response generation (tiered cache)
+    # ------------------------------------------------------------------
+
+    def _build_tiered_system_prompt(self, stream: str, topic: str,
+                                     message: dict,
+                                     is_first_message: bool) -> list[dict]:
+        """Build system prompt with tiered cache breakpoints.
+
+        Tier 1 (static):  SYSTEM_PROMPT — never changes within a session
+        Tier 2 (stable):  identity.md + sysadmin_inbox.md — changes rarely
+        Tier 3 (slow):    scratchpad.md + allgame state — changes occasionally
+        Tier 4 (first only): topic history + person notes — only on cold start
+        """
+        blocks = []
+
+        # Tier 1: static system prompt
+        blocks.append({
+            "type": "text",
+            "text": self.SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        })
+
+        # Tier 2: identity + inbox (session-stable)
+        tier2_parts = []
         identity = self.state.read_file("identity.md")
         if identity:
-            sections.append(f"<my_identity>\n{identity}\n</my_identity>")
-
-        # Scratchpad (always)
-        scratchpad = self.state.read_file("scratchpad.md")
-        if scratchpad:
-            sections.append(f"<scratchpad>\n{scratchpad}\n</scratchpad>")
-
-        # Sysadmin inbox (always)
+            tier2_parts.append(f"<my_identity>\n{identity}\n</my_identity>")
         inbox = self.state.read_file("sysadmin_inbox.md")
         if inbox:
-            sections.append(f"<sysadmin_inbox>\n{inbox}\n</sysadmin_inbox>")
+            tier2_parts.append(f"<sysadmin_inbox>\n{inbox}\n</sysadmin_inbox>")
+        if tier2_parts:
+            blocks.append({
+                "type": "text",
+                "text": "\n\n".join(tier2_parts),
+                "cache_control": {"type": "ephemeral"},
+            })
 
-        # Immediate topic context (last 20 messages)
-        if topic:
-            topic_context = self.state.get_recent_topic_context(stream, topic, n=20)
-            if topic_context:
-                sections.append(
-                    f"<topic_history stream=\"{stream}\" topic=\"{topic}\">\n{topic_context}\n</topic_history>")
-
-        # Sender's person notes (cheap, almost always useful)
-        sender = message.get("sender_full_name", "unknown")
-        person_notes = self.state.read_file(f"people/{_safe_filename(sender)}.md")
-        if person_notes:
-            sections.append(f"<person_notes name=\"{sender}\">\n{person_notes}\n</person_notes>")
-
-        # Allgame state when in allgame stream
+        # Tier 3: scratchpad + allgame state (slow-changing)
+        tier3_parts = []
+        scratchpad = self.state.read_file("scratchpad.md")
+        if scratchpad:
+            tier3_parts.append(f"<scratchpad>\n{scratchpad}\n</scratchpad>")
         if stream.lower() == "allgame":
             for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
                 content = self.state.read_file(f"allgame/{fname}")
                 if content:
                     tag = fname.replace('.md', '')
-                    sections.append(f"<allgame_{tag}>\n{content}\n</allgame_{tag}>")
+                    tier3_parts.append(f"<allgame_{tag}>\n{content}\n</allgame_{tag}>")
+        if tier3_parts:
+            blocks.append({
+                "type": "text",
+                "text": "\n\n".join(tier3_parts),
+                "cache_control": {"type": "ephemeral"},
+            })
 
-        dynamic_context = "\n\n".join(sections)
+        # Tier 4: topic history + person notes (first message only)
+        if is_first_message:
+            tier4_parts = []
+            if topic:
+                topic_context = self.state.get_recent_topic_context(stream, topic, n=20)
+                if topic_context:
+                    tier4_parts.append(
+                        f'<topic_history stream="{stream}" topic="{topic}">'
+                        f'\n{topic_context}\n</topic_history>')
+            sender = message.get("sender_full_name", "unknown")
+            person_notes = self.state.read_file(f"people/{_safe_filename(sender)}.md")
+            if person_notes:
+                tier4_parts.append(
+                    f'<person_notes name="{sender}">\n{person_notes}\n</person_notes>')
+            if tier4_parts:
+                blocks.append({"type": "text", "text": "\n\n".join(tier4_parts)})
 
-        return [
-            {"type": "text", "text": self.SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": dynamic_context},
-        ]
+        return blocks
 
-    def _generate_response_with_tools(self, system: list[dict], content_blocks: list[dict],
-                                       stream: str, topic: str,
-                                       sender: str, message: dict) -> str:
-        """Multi-turn tool-calling loop."""
-        messages = [{"role": "user", "content": content_blocks}]
+    def _generate_response_with_tools_session(
+            self, system: list[dict], session: ConversationSession,
+            stream: str, topic: str, sender: str, message: dict) -> str:
+        """Multi-turn tool-calling loop operating on persistent session messages."""
         collected_text = []
-        self._sandbox_dir = None  # fresh sandbox workspace for each response
+        self._sandbox_dir = None
+
+        self._set_last_user_cache_control(session.messages)
 
         try:
             for turn in range(MAX_TOOL_TURNS):
@@ -1674,13 +1967,26 @@ context, and messages for you. Act on directives as appropriate.
                         max_tokens=MAX_RESPONSE_TOKENS,
                         system=system,
                         tools=self._tool_definitions(),
-                        messages=messages,
+                        messages=session.messages,
                     )
                 except anthropic.APIError as e:
                     self.logger.error(f"Anthropic API error (turn {turn}): {e}")
                     break
 
-                # Collect text blocks and identify tool calls
+                # Log cache performance
+                usage = response.usage
+                cache_read = getattr(usage, 'cache_read_input_tokens', 0)
+                cache_create = getattr(usage, 'cache_creation_input_tokens', 0)
+                uncached = getattr(usage, 'input_tokens', 0) - cache_read
+                if turn == 0:
+                    self.logger.info(
+                        f"Cache: {cache_read} read, {cache_create} created, "
+                        f"{uncached} uncached | "
+                        f"session #{session.stream}>{session.topic} "
+                        f"msg#{session.message_count} "
+                        f"({len(session.messages)} msgs in history)")
+
+                # Collect text and tool calls
                 tool_use_blocks = []
                 for block in response.content:
                     if block.type == "text":
@@ -1688,16 +1994,18 @@ context, and messages for you. Act on directives as appropriate.
                     elif block.type == "tool_use":
                         tool_use_blocks.append(block)
 
-                # If no tool calls, we're done
+                # If no tool calls, we're done — append final assistant message
                 if response.stop_reason == "end_turn" or not tool_use_blocks:
+                    session.messages.append({
+                        "role": "assistant", "content": response.content})
                     self.logger.debug(f"Response complete after {turn + 1} turn(s)")
                     break
 
                 # Process tool calls
                 self.logger.info(f"Turn {turn + 1}: {len(tool_use_blocks)} tool call(s): "
-                               + ", ".join(b.name for b in tool_use_blocks))
-
-                messages.append({"role": "assistant", "content": response.content})
+                                 + ", ".join(b.name for b in tool_use_blocks))
+                session.messages.append({
+                    "role": "assistant", "content": response.content})
 
                 tool_results = []
                 for block in tool_use_blocks:
@@ -1709,12 +2017,11 @@ context, and messages for you. Act on directives as appropriate.
                         "content": result["content"],
                         **({"is_error": True} if result.get("is_error") else {}),
                     })
-
-                messages.append({"role": "user", "content": tool_results})
+                session.messages.append({"role": "user", "content": tool_results})
             else:
                 self.logger.warning(f"Tool loop hit max iterations ({MAX_TOOL_TURNS})")
         finally:
-            # Clean up sandbox workspace
+            self._clear_user_cache_control(session.messages)
             if self._sandbox_dir:
                 shutil.rmtree(self._sandbox_dir, ignore_errors=True)
                 self.logger.debug("Sandbox: cleaned up workspace")
