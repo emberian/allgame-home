@@ -51,6 +51,8 @@ MAX_TOOL_TURNS = 16  # maximum tool-calling iterations per response
 SANDBOX_IMAGE = "claude-sandbox"
 SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
+BG_CONTAINER_NAME = "claude-bg"
+BG_CONTAINER_MEMORY = "512m"
 HARNESS_PATH = Path(__file__).resolve()
 HARNESS_DIR = HARNESS_PATH.parent
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -612,6 +614,12 @@ share them in Zulip. Always review generated files before uploading.
 When you run code for the community, make it legible — share the code and output,
 not just the result.
 
+**Background container:** You also have a persistent Docker container (run_background)
+that stays alive across all your interactions. Same image as the sandbox but with
+512MB memory and 1 CPU core. Files persist, processes can keep running. Use for
+long-running analysis, background agents, persistent workspaces — anything that
+should survive beyond a single response. Use timeout=0 for fire-and-forget processes.
+
 **Self-modification:** You can read and edit your own harness source code
 (claude_resident.py) using read_harness and edit_harness. All edits go
 through git — the current state is committed before changes, the edit is
@@ -905,6 +913,36 @@ context, and messages for you. Act on directives as appropriate.
                 }
             },
             {
+                "name": "run_background",
+                "description": (
+                    "Run a command in your persistent background container. Unlike run_sandbox "
+                    "(which is ephemeral per-response), this container persists across all your "
+                    "interactions. Files you create stay. Processes you start can keep running. "
+                    "Has network access, Anthropic SDK, 512MB memory, 1 CPU core. "
+                    "Use for: long-running analysis, background agents, persistent workspaces, "
+                    "anything that should survive beyond a single response cycle."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command to execute (via /bin/bash -c)."
+                        },
+                        "files": {
+                            "type": "object",
+                            "description": "Optional files to write to /workspace/ before running.",
+                            "additionalProperties": {"type": "string"}
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Timeout in seconds (default 120, max 300). Use 0 for fire-and-forget."
+                        }
+                    },
+                    "required": ["command"]
+                }
+            },
+            {
                 "name": "read_harness",
                 "description": (
                     "Read your own live harness source code (claude_resident.py). "
@@ -1038,6 +1076,7 @@ context, and messages for you. Act on directives as appropriate.
                 "upload_sandbox_file": lambda inp: self._tool_upload_sandbox_file(inp, message),
                 "fetch_url": self._tool_fetch_url,
                 "web_search": self._tool_web_search,
+                "run_background": self._tool_run_background,
                 "read_harness": self._tool_read_harness,
                 "edit_harness": self._tool_edit_harness,
             }.get(tool_name)
@@ -1293,6 +1332,106 @@ context, and messages for you. Act on directives as appropriate.
 
         except Exception as e:
             return {"content": f"Upload error: {e}", "is_error": True}
+
+    def _ensure_bg_container(self):
+        """Start the persistent background container if not already running."""
+        check = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", BG_CONTAINER_NAME],
+            capture_output=True, text=True, timeout=10)
+        if check.returncode == 0 and "true" in check.stdout.lower():
+            return True
+
+        # Remove stale container if exists
+        subprocess.run(
+            ["docker", "rm", "-f", BG_CONTAINER_NAME],
+            capture_output=True, timeout=10)
+
+        # Create persistent workspace dir
+        bg_workspace = self.state.root / "bg_workspace"
+        bg_workspace.mkdir(exist_ok=True)
+
+        result = subprocess.run([
+            "docker", "run", "-d",
+            "--name", BG_CONTAINER_NAME,
+            "--memory", BG_CONTAINER_MEMORY,
+            "--cpus", "1",
+            "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
+            "-e", f"KAGI_API_KEY={os.environ.get('KAGI_API_KEY', '')}",
+            "-v", f"{bg_workspace}:/workspace",
+            "-w", "/workspace",
+            SANDBOX_IMAGE,
+            "sleep", "infinity",
+        ], capture_output=True, text=True, timeout=30)
+
+        if result.returncode == 0:
+            self.logger.info(f"Started persistent background container: {BG_CONTAINER_NAME}")
+            return True
+        else:
+            self.logger.error(f"Failed to start bg container: {result.stderr}")
+            return False
+
+    def _stop_bg_container(self):
+        """Stop and remove the persistent background container."""
+        subprocess.run(
+            ["docker", "rm", "-f", BG_CONTAINER_NAME],
+            capture_output=True, timeout=10)
+        self.logger.info("Stopped persistent background container")
+
+    def _tool_run_background(self, inp: dict) -> dict:
+        command = inp.get("command", "")
+        files = inp.get("files", {})
+        timeout = min(inp.get("timeout", 120), 300)
+
+        if not command:
+            return {"content": "No command provided.", "is_error": True}
+
+        if not self._ensure_bg_container():
+            return {"content": "Failed to start background container.", "is_error": True}
+
+        try:
+            # Write any files first
+            for name, content in files.items():
+                safe_name = name.replace("..", "").lstrip("/")
+                if not safe_name:
+                    continue
+                write_cmd = ["docker", "exec", BG_CONTAINER_NAME,
+                             "bash", "-c", f"mkdir -p $(dirname '/workspace/{safe_name}') && cat > '/workspace/{safe_name}'"]
+                subprocess.run(write_cmd, input=content, capture_output=True,
+                               text=True, timeout=10)
+
+            if timeout == 0:
+                # Fire-and-forget: run detached
+                exec_cmd = ["docker", "exec", "-d", BG_CONTAINER_NAME,
+                            "bash", "-c", command]
+                subprocess.run(exec_cmd, capture_output=True, timeout=10)
+                self.logger.info(f"Background: fire-and-forget command launched")
+                return {"content": "Command launched in background (fire-and-forget)."}
+
+            # Normal exec with timeout
+            exec_cmd = ["docker", "exec", BG_CONTAINER_NAME,
+                        "bash", "-c", command]
+            result = subprocess.run(exec_cmd, capture_output=True, text=True,
+                                    timeout=timeout)
+
+            output = ""
+            if result.stdout:
+                output += result.stdout
+            if result.stderr:
+                output += ("\n--- stderr ---\n" + result.stderr) if output else result.stderr
+            if not output:
+                output = "(no output)"
+            if result.returncode != 0:
+                output += f"\n\n[exit code: {result.returncode}]"
+            if len(output) > 50_000:
+                output = output[:50_000] + "\n\n[Output truncated at 50k chars]"
+
+            self.logger.info(f"Background: command completed (exit {result.returncode})")
+            return {"content": output}
+
+        except subprocess.TimeoutExpired:
+            return {"content": f"Command timed out after {timeout}s. Use timeout=0 for fire-and-forget.", "is_error": True}
+        except Exception as e:
+            return {"content": f"Background container error: {e}", "is_error": True}
 
     def _tool_web_search(self, inp: dict) -> dict:
         query = inp.get("query", "")
@@ -2157,6 +2296,15 @@ about this moment."""
         # Backfill recent history so preloaded context is fresh
         self._backfill_history()
 
+        # Start persistent background container
+        self._ensure_bg_container()
+
+        # Refresh harness copy in state dir
+        try:
+            self.state.write_file("harness.py", HARNESS_PATH.read_text())
+        except Exception:
+            pass
+
         # Register the event queue
         result = self.zulip.register(
             event_types=["message"],
@@ -2172,34 +2320,35 @@ about this moment."""
 
         self.logger.info(f"Registered event queue: {queue_id}")
 
-        # Announce presence (optional — remove if too noisy)
-        # self._announce_startup()
+        try:
+            while True:
+                try:
+                    events = self.zulip.get_events(
+                        queue_id=queue_id,
+                        last_event_id=last_event_id,
+                        dont_block=False,
+                    )
 
-        while True:
-            try:
-                events = self.zulip.get_events(
-                    queue_id=queue_id,
-                    last_event_id=last_event_id,
-                    dont_block=False,
-                )
+                    if events.get("result") != "success":
+                        self.logger.error(f"Event fetch error: {events}")
+                        time.sleep(5)
+                        continue
 
-                if events.get("result") != "success":
-                    self.logger.error(f"Event fetch error: {events}")
+                    for event in events.get("events", []):
+                        last_event_id = max(last_event_id, event["id"])
+
+                        if event.get("type") == "message":
+                            self.handle_message(event["message"])
+
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    self.logger.error(f"Unexpected error: {e}", exc_info=True)
                     time.sleep(5)
-                    continue
-
-                for event in events.get("events", []):
-                    last_event_id = max(last_event_id, event["id"])
-
-                    if event.get("type") == "message":
-                        self.handle_message(event["message"])
-
-            except KeyboardInterrupt:
-                self.logger.info("Shutting down gracefully...")
-                break
-            except Exception as e:
-                self.logger.error(f"Unexpected error: {e}", exc_info=True)
-                time.sleep(5)
+        except KeyboardInterrupt:
+            self.logger.info("Shutting down gracefully...")
+        finally:
+            self._stop_bg_container()
 
 
 # ---------------------------------------------------------------------------
