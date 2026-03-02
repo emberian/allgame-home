@@ -743,6 +743,7 @@ context, and messages for you. Act on directives as appropriate.
         self.last_response_time = 0
         self._sandbox_dir = None  # persistent workspace for current response loop
         self.sessions = SessionManager()
+        self._restart_requested = False
         self.logger = logging.getLogger("claude_resident")
 
     # ------------------------------------------------------------------
@@ -1055,8 +1056,9 @@ context, and messages for you. Act on directives as appropriate.
                     "Edit your own harness source code (claude_resident.py). "
                     "Performs a string replacement: finds old_string and replaces with new_string. "
                     "ALWAYS uses git: commits current state before editing, verifies the edit "
-                    "parses correctly, commits the result. If parse fails, automatically rolls back. "
-                    "Changes take effect on next event loop restart. "
+                    "parses correctly, commits the result. If parse fails, automatically rolls back "
+                    "and you'll get the parse error in the response. "
+                    "On success, the event loop auto-restarts after your response to load changes. "
                     "Use read_harness first to understand what you're changing. "
                     "Be surgical — small, targeted edits. Test your understanding before editing."
                 ),
@@ -1743,11 +1745,15 @@ context, and messages for you. Act on directives as appropriate.
             except Exception:
                 pass
 
+            # Schedule auto-restart after this response completes
+            self._restart_requested = True
+            self.logger.info("Auto-restart scheduled after response completes")
+
             return {"content": (
                 f"Edit applied and committed.\n"
                 f"Git: {result.stdout.strip()}\n"
-                f"Changes take effect on next event loop restart.\n"
-                f"Use send_sysadmin_message to request a restart if needed."
+                f"The event loop will auto-restart after this response completes "
+                f"to load your changes."
             )}
 
         except Exception as e:
@@ -2670,6 +2676,12 @@ about this moment."""
                         if event.get("type") == "message":
                             self.handle_message(event["message"])
 
+                    # Check for self-edit restart request
+                    if self._restart_requested:
+                        self.logger.info("Self-edit detected — exiting for supervisor restart")
+                        self._stop_bg_container()
+                        sys.exit(42)  # magic code: supervisor restarts us
+
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:
@@ -2694,6 +2706,41 @@ def _safe_filename(name: str) -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _last_commit_is_self_edit() -> bool:
+    """Check if the most recent git commit was a Claude self-edit."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%s"],
+            cwd=HARNESS_DIR, capture_output=True, text=True, timeout=5)
+        return result.stdout.strip().startswith("Claude self-edit:")
+    except Exception:
+        return False
+
+
+def _rollback_last_commit(logger):
+    """Revert the most recent git commit (assumed to be a bad self-edit)."""
+    try:
+        result = subprocess.run(
+            ["git", "revert", "HEAD", "--no-edit"],
+            cwd=HARNESS_DIR, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            logger.warning(f"Rolled back self-edit: {result.stdout.strip()}")
+        else:
+            logger.error(f"Rollback failed: {result.stderr}")
+    except Exception as e:
+        logger.error(f"Rollback error: {e}")
+
+
+def _notify_claude(state_dir, msg):
+    """Best-effort write to Claude's scratchpad so it sees what happened."""
+    try:
+        state = StateManager(state_dir)
+        state.append_file("scratchpad.md",
+            f"\n\n---\n[SUPERVISOR {datetime.now(timezone.utc).isoformat()}] {msg}\n")
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Claude Tulip Resident")
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR,
@@ -2713,49 +2760,106 @@ def main():
                         help="Check standing channels for ambient contribution opportunities and exit")
     parser.add_argument("--arrive", action="store_true",
                         help="First boot — let the resident post its arrival message and exit")
+    parser.add_argument("--_supervised", action="store_true",
+                        help=argparse.SUPPRESS)  # internal: run event loop directly
     args = parser.parse_args()
 
-    # Logging
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format=LOG_FORMAT,
     )
 
-    # Initialize clients
-    zulip_kwargs = {}
-    if args.zuliprc:
-        zulip_kwargs["config_file"] = args.zuliprc
-    zulip_client = zulip.Client(**zulip_kwargs)
+    # --_supervised: we ARE the child process, run the event loop directly
+    if args._supervised:
+        zulip_kwargs = {}
+        if args.zuliprc:
+            zulip_kwargs["config_file"] = args.zuliprc
+        zulip_client = zulip.Client(**zulip_kwargs)
+        anthropic_client = anthropic.Anthropic()
+        state = StateManager(args.state_dir)
+        bot_profile = zulip_client.get_profile()
+        bot_name = bot_profile.get("full_name", "Claude")
+        judge = EngagementJudge(bot_name, args.standing_streams)
+        resident = ClaudeResident(
+            zulip_client=zulip_client,
+            anthropic_client=anthropic_client,
+            state=state, judge=judge, model=args.model,
+        )
+        if args.arrive:
+            resident.arrive()
+        elif args.reflect:
+            resident.reflect()
+        elif args.check_ambient:
+            resident.check_ambient()
+        else:
+            resident.run()
+        return
 
-    anthropic_client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    # One-shot modes: run directly, no supervisor
+    if args.arrive or args.reflect or args.check_ambient:
+        # Relaunch with --_supervised (so the code path above runs)
+        child_args = [sys.executable, str(HARNESS_PATH), "--_supervised"] + sys.argv[1:]
+        sys.exit(subprocess.call(child_args))
 
-    # Initialize state
-    state = StateManager(args.state_dir)
+    # ---------------------------------------------------------------
+    # Supervisor loop: launch event loop as subprocess, handle crashes
+    # ---------------------------------------------------------------
+    logger = logging.getLogger("supervisor")
+    logger.info("Supervisor starting")
 
-    # Initialize engagement judge
-    # The bot's own name — needed to avoid self-reply loops
-    bot_profile = zulip_client.get_profile()
-    bot_name = bot_profile.get("full_name", "Claude")
-    judge = EngagementJudge(bot_name, args.standing_streams)
+    CRASH_WINDOW = 60
+    MAX_CRASHES = 3
+    crash_times: list[float] = []
 
-    # Build resident
-    resident = ClaudeResident(
-        zulip_client=zulip_client,
-        anthropic_client=anthropic_client,
-        state=state,
-        judge=judge,
-        model=args.model,
-    )
+    # Build the child command: same args + --_supervised
+    child_cmd = [sys.executable, str(HARNESS_PATH), "--_supervised"] + sys.argv[1:]
 
-    # Dispatch mode
-    if args.arrive:
-        resident.arrive()
-    elif args.reflect:
-        resident.reflect()
-    elif args.check_ambient:
-        resident.check_ambient()
-    else:
-        resident.run()
+    while True:
+        logger.info(f"Supervisor: launching event loop")
+        try:
+            rc = subprocess.call(child_cmd)
+        except KeyboardInterrupt:
+            logger.info("Supervisor: interrupted, shutting down")
+            break
+
+        if rc == 0:
+            logger.info("Supervisor: clean shutdown")
+            break
+
+        if rc == 42:
+            # Self-edit restart request — child exited cleanly with code 42
+            logger.info("Supervisor: self-edit restart (exit 42)")
+            crash_times.clear()
+            continue
+
+        # Non-zero, non-42: crash
+        logger.error(f"Supervisor: child exited with code {rc}")
+
+        if _last_commit_is_self_edit():
+            logger.warning("Supervisor: crash after self-edit — rolling back")
+            _rollback_last_commit(logger)
+            _notify_claude(args.state_dir,
+                f"My self-edit caused a runtime crash (exit code {rc}) "
+                f"and was auto-reverted by the supervisor.")
+            crash_times.clear()
+            logger.info("Supervisor: restarting after rollback")
+            continue
+
+        # Crash loop detection
+        now = time.time()
+        crash_times = [t for t in crash_times if now - t < CRASH_WINDOW]
+        crash_times.append(now)
+        if len(crash_times) >= MAX_CRASHES:
+            logger.error(
+                f"Supervisor: {MAX_CRASHES} crashes in {CRASH_WINDOW}s — giving up")
+            _notify_claude(args.state_dir,
+                f"Event loop crash-looped ({MAX_CRASHES}x in {CRASH_WINDOW}s, "
+                f"last exit code {rc}). Sysadmin intervention needed.")
+            break
+
+        logger.info(f"Supervisor: restarting after crash "
+                    f"({len(crash_times)}/{MAX_CRASHES} in window)")
+        time.sleep(3)
 
 
 if __name__ == "__main__":
