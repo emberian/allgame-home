@@ -1244,6 +1244,9 @@ context, and messages for you. Act on directives as appropriate.
             self.logger.debug(f"Tool read (binary/base64): {path} ({len(raw)} bytes)")
             return {"content": f"[binary file: {len(raw)} bytes, base64-encoded]\n{b64}"}
 
+    # Files where replace is blocked — append-only by architecture, not willpower
+    APPEND_ONLY_FILES = {"journal.md"}
+
     def _tool_write_state_file(self, inp: dict) -> dict:
         path = inp.get("path", "")
         content = inp.get("content", "")
@@ -1252,6 +1255,12 @@ context, and messages for you. Act on directives as appropriate.
             return {"content": "Invalid path", "is_error": True}
         if action not in ("replace", "append"):
             return {"content": f"Invalid action: {action}", "is_error": True}
+        # Enforce append-only files
+        basename = path.split("/")[-1] if "/" in path else path
+        if basename in self.APPEND_ONLY_FILES and action == "replace":
+            return {"content": f"Blocked: {path} is append-only. Use action='append'. "
+                    f"This is enforced structurally because you've proven you can't be trusted "
+                    f"with replace on your own journal.", "is_error": True}
         self.logger.info(f"Tool state write: {action} {path} ({len(content)} chars)")
         # On replace, capture previous content so the model sees what it's overwriting
         previous = None
