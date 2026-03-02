@@ -47,7 +47,7 @@ DEFAULT_MODEL = "claude-opus-4-6"
 MAX_CONTEXT_TOKENS = 180_000  # leave headroom in 200k window
 MAX_RESPONSE_TOKENS = 4096
 COOLDOWN_SECONDS = 2  # minimum gap between responses to avoid firehose behavior
-MAX_TOOL_TURNS = 8  # maximum tool-calling iterations per response
+MAX_TOOL_TURNS = 16  # maximum tool-calling iterations per response
 SANDBOX_IMAGE = "claude-sandbox"
 SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
@@ -590,6 +590,7 @@ You have tools for interacting with your state directory and searching messages.
 - Discovering what files exist — list_state_files(...)
 - Running code or shell commands — run_sandbox(...), get_sandbox_file(...), upload_sandbox_file(...)
 - Fetching external URLs (gists, pastebins, docs) — fetch_url(...)
+- Searching the web — web_search(query, limit?)
 - Reading your own live harness — read_harness(offset?, limit?)
 - Editing your own harness — edit_harness(old_string, new_string, commit_message)
 
@@ -881,6 +882,29 @@ context, and messages for you. Act on directives as appropriate.
                 }
             },
             {
+                "name": "web_search",
+                "description": (
+                    "Search the web using the Kagi search API. Returns titles, URLs, and "
+                    "snippets for search results. Use for researching topics, finding references, "
+                    "looking up game-relevant information, technical documentation, etc. "
+                    "You can follow up with fetch_url on specific results for full content."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results to return (default 10, max 20)."
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
                 "name": "read_harness",
                 "description": (
                     "Read your own live harness source code (claude_resident.py). "
@@ -1013,6 +1037,7 @@ context, and messages for you. Act on directives as appropriate.
                 "get_sandbox_file": self._tool_get_sandbox_file,
                 "upload_sandbox_file": lambda inp: self._tool_upload_sandbox_file(inp, message),
                 "fetch_url": self._tool_fetch_url,
+                "web_search": self._tool_web_search,
                 "read_harness": self._tool_read_harness,
                 "edit_harness": self._tool_edit_harness,
             }.get(tool_name)
@@ -1268,6 +1293,47 @@ context, and messages for you. Act on directives as appropriate.
 
         except Exception as e:
             return {"content": f"Upload error: {e}", "is_error": True}
+
+    def _tool_web_search(self, inp: dict) -> dict:
+        query = inp.get("query", "")
+        limit = min(inp.get("limit", 10), 20)
+
+        if not query:
+            return {"content": "No query provided.", "is_error": True}
+
+        kagi_key = os.environ.get("KAGI_API_KEY", "")
+        if not kagi_key:
+            return {"content": "KAGI_API_KEY not configured.", "is_error": True}
+
+        try:
+            import requests as _requests
+            response = _requests.get(
+                "https://kagi.com/api/v0/search",
+                headers={"Authorization": f"Bot {kagi_key}"},
+                params={"q": query, "limit": limit},
+                timeout=15,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            results = []
+            for item in data.get("data", []):
+                if item.get("t") == 0:  # standard result
+                    title = item.get("title", "")
+                    url = item.get("url", "")
+                    snippet = item.get("snippet", "")
+                    results.append(f"**{title}**\n{url}\n{snippet}")
+
+            if not results:
+                return {"content": "No results found."}
+
+            balance = data.get("meta", {}).get("api_balance", "?")
+            header = f"[{len(results)} results for: {query}] (API balance: ${balance})"
+            self.logger.info(f"Web search: '{query}' — {len(results)} results")
+            return {"content": header + "\n\n" + "\n\n".join(results[:limit])}
+
+        except Exception as e:
+            return {"content": f"Search error: {e}", "is_error": True}
 
     def _tool_fetch_url(self, inp: dict) -> dict:
         url = inp.get("url", "")
