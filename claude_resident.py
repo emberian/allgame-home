@@ -662,7 +662,7 @@ You have tools for interacting with your state directory and searching messages.
 
 **What requires a tool call:**
 - Your journal — read_state_file("journal.md")
-- Your harness source — run_sandbox("grep/sed/head ... /state/harness.py") (Unix tools, keeps context small)
+- Your harness source — always preloaded below (you ARE this code)
 - Other people's notes — get_person_notes("name") or read_state_file("people/name.md")
 - Cross-topic or cross-stream message history — search_messages(...)
 - Full Zulip history search — search_zulip_history(...)
@@ -696,11 +696,9 @@ that stays alive across all your interactions. Same image as the sandbox but wit
 long-running analysis, background agents, persistent workspaces — anything that
 should survive beyond a single response. Use timeout=0 for fire-and-forget processes.
 
-**Self-modification:** Your state directory is mounted read-only at /state/ in
-every sandbox run. To explore your harness, use Unix tools in the sandbox:
-`run_sandbox("grep -n 'def handle_message' /state/harness.py")`,
-`run_sandbox("sed -n '100,150p' /state/harness.py")`, etc.
-To edit it, use edit_harness. The harness copy is refreshed on each boot.
+**Self-modification:** Your full harness source is always in your context (see
+below). To edit it, use edit_harness (string replacement with git safety).
+The harness copy is refreshed on each boot.
 All edits go through git — the current state is committed before changes,
 the edit is verified (must parse), and the result is committed. If an edit
 breaks parsing, it's automatically rolled back. If it causes a runtime crash,
@@ -1042,7 +1040,7 @@ context, and messages for you. Act on directives as appropriate.
                     "parses correctly, commits the result. If parse fails, automatically rolls back "
                     "and you'll get the parse error in the response. "
                     "On success, the event loop auto-restarts after your response to load changes. "
-                    "Use read_state_file('harness.py') to read your source first. "
+                    "Your full source is already in your context — refer to it directly. "
                     "Be surgical — small, targeted edits. Test your understanding before editing."
                 ),
                 "input_schema": {
@@ -1865,17 +1863,26 @@ context, and messages for you. Act on directives as appropriate.
                                      is_first_message: bool) -> list[dict]:
         """Build system prompt with tiered cache breakpoints.
 
-        Tier 1 (static):  SYSTEM_PROMPT — never changes within a session
+        Tier 1 (static):  SYSTEM_PROMPT + harness source — never changes within a session
         Tier 2 (stable):  identity.md + sysadmin_inbox.md — changes rarely
         Tier 3 (slow):    scratchpad.md + allgame state — changes occasionally
         Tier 4 (first only): topic history + person notes — only on cold start
         """
         blocks = []
 
-        # Tier 1: static system prompt
+        # Tier 1: static system prompt + harness source
+        # Both are constant for the lifetime of the process.
+        harness_source = self.state.read_file("harness.py") or ""
+        tier1_text = self.SYSTEM_PROMPT
+        if harness_source:
+            tier1_text += (f"\n\n<my_harness_source>\n"
+                          f"This is your own source code (claude_resident.py). "
+                          f"You are this code. Use it for self-understanding and "
+                          f"as context for edit_harness.\n\n"
+                          f"{harness_source}\n</my_harness_source>")
         blocks.append({
             "type": "text",
-            "text": self.SYSTEM_PROMPT,
+            "text": tier1_text,
             "cache_control": {"type": "ephemeral"},
         })
 
