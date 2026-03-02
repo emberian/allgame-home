@@ -1094,13 +1094,21 @@ context, and messages for you. Act on directives as appropriate.
         path = inp.get("path", "")
         if ".." in path or path.startswith("/"):
             return {"content": "Invalid path: must be relative, no '..'", "is_error": True}
-        content = self.state.read_file(path)
-        if content is None:
+        full_path = self.state.root / path
+        if not full_path.exists():
             return {"content": f"File not found: {path}", "is_error": True}
-        if len(content) > 50_000:
-            content = content[:50_000] + f"\n\n[Truncated — file is {len(content)} chars total]"
-        self.logger.debug(f"Tool read: {path} ({len(content)} chars)")
-        return {"content": content}
+        # Try text first, fall back to base64 for binary files
+        try:
+            content = full_path.read_text()
+            if len(content) > 50_000:
+                content = content[:50_000] + f"\n\n[Truncated — file is {len(content)} chars total]"
+            self.logger.debug(f"Tool read: {path} ({len(content)} chars)")
+            return {"content": content}
+        except (UnicodeDecodeError, ValueError):
+            raw = full_path.read_bytes()
+            b64 = base64.b64encode(raw).decode("ascii")
+            self.logger.debug(f"Tool read (binary/base64): {path} ({len(raw)} bytes)")
+            return {"content": f"[binary file: {len(raw)} bytes, base64-encoded]\n{b64}"}
 
     def _tool_write_state_file(self, inp: dict) -> dict:
         path = inp.get("path", "")
