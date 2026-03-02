@@ -19,6 +19,7 @@ import queue
 import types
 import logging
 import argparse
+import importlib
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1401,7 +1402,7 @@ def main():
     logging.getLogger("claude_resident").addHandler(log_handler)
     logging.getLogger("session_manager").addHandler(log_handler)
 
-    # Initialize harness components (same as claude_resident.main)
+    # Initialize shared clients (persist across harness reloads)
     import zulip as zulip_mod
     import anthropic as anthropic_mod
 
@@ -1410,52 +1411,186 @@ def main():
         zulip_kwargs["config_file"] = args.zuliprc
     zulip_client = zulip_mod.Client(**zulip_kwargs)
     anthropic_client = anthropic_mod.Anthropic()
-    state = StateManager(args.state_dir)
     bot_profile = zulip_client.get_profile()
     bot_name = bot_profile.get("full_name", "Claude")
 
     logging.getLogger("monitor").info(f"Bot name: {bot_name}")
 
-    judge = EngagementJudge(bot_name, args.standing_streams)
-    resident = ClaudeResident(
-        zulip_client=zulip_client,
-        anthropic_client=anthropic_client,
-        state=state, judge=judge, model=args.model,
-    )
+    # Harness creation helper — used for initial boot and after self-edit reloads.
+    # Always pulls classes from the (possibly reloaded) claude_resident module.
+    def create_harness():
+        CR = claude_resident.ClaudeResident
+        SM = claude_resident.StateManager
+        EJ = claude_resident.EngagementJudge
+        st = SM(args.state_dir)
+        jg = EJ(bot_name, args.standing_streams)
+        res = CR(
+            zulip_client=zulip_client,
+            anthropic_client=anthropic_client,
+            state=st, judge=jg, model=args.model,
+        )
+        mon = HarnessMonitor(res, event_queue)
+        return res, mon
 
-    # Wrap with monitoring
-    harness_monitor = HarnessMonitor(resident, event_queue)
+    resident, harness_monitor = create_harness()
 
-    # Notify UI of connection
     event_queue.put(LogEvent(
         level="INFO", source="monitor",
         message=f"Harness initialized. Bot: {bot_name}, Model: {args.model}",
     ))
 
-    # Start harness in background thread
-    def run_harness():
-        try:
-            event_queue.put(LogEvent(
-                level="INFO", source="monitor",
-                message="Starting harness event loop...",
-            ))
-            resident.run()
-        except Exception as e:
-            event_queue.put(ErrorEvent(
-                context="harness", message=str(e),
-            ))
-
     # Start DearPyGui dashboard on the main thread (must setup before harness thread)
     app = MonitorApp(harness_monitor, args.state_dir)
     app.setup()
-
-    # Initial state tree load
     app._refresh_state_tree()
 
-    # Start harness AFTER UI is fully initialized
-    harness_thread = threading.Thread(target=run_harness, daemon=True,
-                                       name="harness")
-    harness_thread.start()
+    # ------------------------------------------------------------------
+    # Supervisor loop — runs in background thread, handles self-edit
+    # reloads, crash-after-edit rollback, and crash loop detection.
+    # Mirrors the supervisor in claude_resident.main() but in-process:
+    # instead of relaunching a subprocess, we importlib.reload the module,
+    # recreate the ClaudeResident, and re-apply monkey patches.
+    # ------------------------------------------------------------------
+    def supervisor_loop():
+        nonlocal resident, harness_monitor
+
+        CRASH_WINDOW = 60
+        MAX_CRASHES = 3
+        crash_times: list[float] = []
+        logger = logging.getLogger("supervisor")
+
+        while True:
+            try:
+                event_queue.put(LogEvent(
+                    level="INFO", source="supervisor",
+                    message="Starting harness event loop...",
+                ))
+                resident.run()
+                # Clean return (e.g. KeyboardInterrupt caught internally)
+                event_queue.put(LogEvent(
+                    level="INFO", source="supervisor",
+                    message="Harness event loop ended cleanly",
+                ))
+                break
+
+            except SystemExit as e:
+                if e.code == 42:
+                    # ---- Self-edit restart ----
+                    logger.info("Supervisor: self-edit restart (exit 42)")
+                    event_queue.put(LogEvent(
+                        level="WARNING", source="supervisor",
+                        message="Self-edit detected — reloading harness...",
+                    ))
+                    crash_times.clear()
+
+                    try:
+                        importlib.reload(claude_resident)
+                        resident, harness_monitor = create_harness()
+                        app.monitor = harness_monitor
+                        event_queue.put(LogEvent(
+                            level="INFO", source="supervisor",
+                            message="Harness reloaded successfully, restarting...",
+                        ))
+                        continue
+                    except Exception as reload_err:
+                        logger.error(f"Supervisor: reload failed: {reload_err}",
+                                     exc_info=True)
+                        event_queue.put(ErrorEvent(
+                            context="supervisor",
+                            message=f"Reload failed after self-edit: {reload_err}",
+                        ))
+                        # Rollback the bad edit
+                        if claude_resident._last_commit_is_self_edit():
+                            claude_resident._rollback_last_commit(logger)
+                            claude_resident._notify_claude(args.state_dir,
+                                f"Self-edit caused reload failure ({reload_err}) "
+                                f"and was auto-reverted by the supervisor.")
+                            event_queue.put(LogEvent(
+                                level="WARNING", source="supervisor",
+                                message="Self-edit rolled back, reloading original...",
+                            ))
+                        # Try to recover with the reverted code
+                        try:
+                            importlib.reload(claude_resident)
+                            resident, harness_monitor = create_harness()
+                            app.monitor = harness_monitor
+                            continue
+                        except Exception as e2:
+                            event_queue.put(ErrorEvent(
+                                context="supervisor",
+                                message=f"Cannot recover after rollback: {e2}. "
+                                        f"Harness stopped.",
+                            ))
+                            break
+                else:
+                    # Non-42 SystemExit — unexpected
+                    event_queue.put(ErrorEvent(
+                        context="supervisor",
+                        message=f"Harness exited with code {e.code}",
+                    ))
+                    break
+
+            except Exception as e:
+                # ---- Crash ----
+                logger.error(f"Supervisor: harness crashed: {e}", exc_info=True)
+                event_queue.put(ErrorEvent(
+                    context="harness", message=f"Crash: {e}",
+                ))
+
+                # Check if a self-edit caused this crash
+                if claude_resident._last_commit_is_self_edit():
+                    logger.warning(
+                        "Supervisor: crash after self-edit — rolling back")
+                    claude_resident._rollback_last_commit(logger)
+                    claude_resident._notify_claude(args.state_dir,
+                        f"Self-edit caused a runtime crash ({e}) "
+                        f"and was auto-reverted by the supervisor.")
+                    event_queue.put(LogEvent(
+                        level="WARNING", source="supervisor",
+                        message="Self-edit rolled back after crash, restarting...",
+                    ))
+                    crash_times.clear()
+                    try:
+                        importlib.reload(claude_resident)
+                        resident, harness_monitor = create_harness()
+                        app.monitor = harness_monitor
+                        continue
+                    except Exception as e2:
+                        event_queue.put(ErrorEvent(
+                            context="supervisor",
+                            message=f"Cannot recover after rollback: {e2}. "
+                                    f"Harness stopped.",
+                        ))
+                        break
+
+                # Crash loop detection
+                now = time.time()
+                crash_times = [t for t in crash_times
+                               if now - t < CRASH_WINDOW]
+                crash_times.append(now)
+                if len(crash_times) >= MAX_CRASHES:
+                    event_queue.put(ErrorEvent(
+                        context="supervisor",
+                        message=f"Crash loop ({MAX_CRASHES}x in "
+                                f"{CRASH_WINDOW}s). Harness stopped.",
+                    ))
+                    claude_resident._notify_claude(args.state_dir,
+                        f"Event loop crash-looped "
+                        f"({MAX_CRASHES}x in {CRASH_WINDOW}s). "
+                        f"Sysadmin intervention needed.")
+                    break
+
+                event_queue.put(LogEvent(
+                    level="WARNING", source="supervisor",
+                    message=f"Restarting after crash "
+                            f"({len(crash_times)}/{MAX_CRASHES} in window)",
+                ))
+                time.sleep(3)
+
+    # Start supervisor AFTER UI is fully initialized
+    supervisor_thread = threading.Thread(target=supervisor_loop, daemon=True,
+                                         name="supervisor")
+    supervisor_thread.start()
 
     app.run()
 
