@@ -1253,11 +1253,20 @@ context, and messages for you. Act on directives as appropriate.
         if action not in ("replace", "append"):
             return {"content": f"Invalid action: {action}", "is_error": True}
         self.logger.info(f"Tool state write: {action} {path} ({len(content)} chars)")
+        # On replace, capture previous content so the model sees what it's overwriting
+        previous = None
         if action == "replace":
+            previous = self.state.read_file(path)
             self.state.write_file(path, content)
         else:
             self.state.append_file(path, content)
-        return {"content": f"OK: {action} {path} ({len(content)} chars written)"}
+        result = f"OK: {action} {path} ({len(content)} chars written)"
+        if previous is not None:
+            preview = previous[:500]
+            if len(previous) > 500:
+                preview += f"\n... [{len(previous)} chars total]"
+            result += f"\n\n[Previous content was:]\n{preview}"
+        return {"content": result}
 
     def _tool_list_state_files(self, inp: dict) -> dict:
         directory = inp.get("directory", "")
