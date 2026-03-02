@@ -1215,6 +1215,7 @@ context, and messages for you. Act on directives as appropriate.
     def _tool_run_sandbox(self, inp: dict) -> dict:
         command = inp.get("command", "")
         files = inp.get("files", {})
+        state_files = inp.get("state_files", {})
 
         if not command:
             return {"content": "No command provided.", "is_error": True}
@@ -1233,6 +1234,20 @@ context, and messages for you. Act on directives as appropriate.
                 filepath = Path(self._sandbox_dir) / safe_name
                 filepath.parent.mkdir(parents=True, exist_ok=True)
                 filepath.write_text(file_content)
+
+            # Copy state files into the workspace (binary-safe)
+            for state_path, dest_name in state_files.items():
+                if ".." in state_path or state_path.startswith("/"):
+                    continue
+                src = self.state.root / state_path
+                if not src.exists():
+                    continue
+                safe_dest = dest_name.replace("..", "").lstrip("/")
+                if not safe_dest:
+                    continue
+                dest = Path(self._sandbox_dir) / safe_dest
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(src), str(dest))
 
             docker_cmd = [
                 "docker", "run", "--rm",
