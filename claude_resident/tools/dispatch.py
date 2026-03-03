@@ -117,4 +117,5 @@ _HANDLERS = {
     "run_background": _h_run_background,
     "edit_harness": _h_edit_harness,
     "run_mirror_council": _h_run_mirror_council,
+    "add_reaction": _h_add_reaction,
 }
