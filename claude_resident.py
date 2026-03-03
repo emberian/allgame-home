@@ -2096,6 +2096,7 @@ context, and messages for you. Act on directives as appropriate.
                     response = self.anthropic.messages.create(
                         model=self.model,
                         max_tokens=MAX_RESPONSE_TOKENS,
+                        thinking={"type": "enabled", "budget_tokens": THINKING_BUDGET},
                         system=system,
                         tools=self._tool_definitions(),
                         messages=session.messages,
