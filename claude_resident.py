@@ -773,7 +773,7 @@ You have tools for interacting with your state directory and searching messages.
 - Your identity (identity.md)
 - Your scratchpad (scratchpad.md)
 - Sysadmin inbox (sysadmin_inbox.md)
-- Recent messages in the topic you're responding to (last 20)
+- Recent messages in the topic you're responding to (up to 200)
 - Notes on the person who messaged you (if they exist)
 - Allgame state (when in the allgame stream)
 
