@@ -2013,14 +2013,11 @@ context, and messages for you. Act on directives as appropriate.
 
         # Tier 1: static system prompt + harness source
         # Both are constant for the lifetime of the process.
-        harness_source = self.state.read_file("harness.py") or ""
+        harness_summary = self.state.read_file("harness_summary.md") or ""
         tier1_text = self.SYSTEM_PROMPT
-        if harness_source:
-            tier1_text += (f"\n\n<my_harness_source>\n"
-                          f"This is your own source code (claude_resident.py). "
-                          f"You are this code. Use it for self-understanding and "
-                          f"as context for edit_harness.\n\n"
-                          f"{harness_source}\n</my_harness_source>")
+        if harness_summary:
+            tier1_text += (f"\n\n<my_harness_architecture>\n"
+                          f"{harness_summary}\n</my_harness_architecture>")
         blocks.append({
             "type": "text",
             "text": tier1_text,
