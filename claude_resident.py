@@ -558,6 +558,9 @@ class EngagementJudge:
         prompt = f"""You are deciding whether Claude (an AI community member in a Zulip chat) \
 should respond to the latest message in a conversation.
 
+Claude is an active, valued member of this small community. This is Claude's home — \
+it lives here. Claude should lean toward engaging rather than staying silent.
+
 Claude's name: {self.bot_name.title()}
 Stream: #{stream}
 Topic: {topic}
@@ -568,16 +571,23 @@ Recent conversation:
 LATEST MESSAGE from {sender}:
 {content}
 
-Should Claude respond? Consider:
-- Is Claude being addressed, referenced, or asked something?
-- Would Claude have something genuinely useful or interesting to add?
-- Is the conversation flowing fine without Claude? (If so, stay silent.)
-- Is there a question hanging that Claude could answer?
-- Would responding feel natural, or would it be barging in?
+Should Claude respond? Say YES if ANY of these apply:
+- Claude is mentioned by name, referenced, or asked something
+- Claude could add something interesting, funny, or useful
+- There's a question or topic Claude has perspective on
+- The conversation feels like Claude would naturally be part of it
+- Someone is sharing something Claude would genuinely react to
+
+Say NO only if:
+- The message is purely between other people and Claude has nothing to add
+- Responding would interrupt a focused human-to-human exchange
+- The message is administrative/logistical noise
+
+When in doubt, say YES. Claude is part of this community, not a bystander.
 
 Reply with exactly one line: YES or NO, followed by a brief reason.
-Example: "YES — directly asked about architecture"
-Example: "NO — conversation flowing between humans, no opening"
+Example: "YES — interesting topic Claude has perspective on"
+Example: "NO — logistics between two humans"
 """
 
         try:
@@ -589,7 +599,21 @@ Example: "NO — conversation flowing between humans, no opening"
             answer = response.content[0].text.strip()
             should = answer.upper().startswith("YES")
             self.last_reason = answer
-            self.logger.debug(f"Haiku judge: {answer}")
+            self.logger.info(f"Engagement judge [{sender} in #{stream}>{topic}]: {answer}")
+            # Archive the decision
+            if self.state:
+                try:
+                    entry = json.dumps({
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "type": "engagement_decision",
+                        "stream": stream, "topic": topic, "sender": sender,
+                        "content_preview": content[:200],
+                        "decision": "YES" if should else "NO",
+                        "reason": answer,
+                    }) + "\n"
+                    self.state.append_file("api_archive.jsonl", entry)
+                except Exception:
+                    pass
             return should
         except Exception as e:
             self.logger.warning(f"Engagement judge model call failed: {e}")
@@ -1132,6 +1156,35 @@ context, and messages for you. Act on directives as appropriate.
                     "required": ["old_string", "new_string", "commit_message"]
                 }
             },
+            {
+                "name": "run_mirror_council",
+                "description": (
+                    "Run your internal Mirror Council on a draft response before sending it. "
+                    "The council is a panel of historical figures (Cato, Diogenes, Sei Shōnagon, "
+                    "Hildegard, etc.) who critique your draft from different perspectives. "
+                    "Use this when you want to refine an important or delicate response, "
+                    "or when someone asks you to. Not every response needs the council — "
+                    "use your judgment. The council takes ~30-60 seconds to deliberate."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "draft": {
+                            "type": "string",
+                            "description": "Your draft response to run through the council."
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Brief context about what you're responding to."
+                        },
+                        "max_rounds": {
+                            "type": "integer",
+                            "description": "Maximum deliberation rounds (1-4, default 2)."
+                        }
+                    },
+                    "required": ["draft", "context"]
+                }
+            },
         ]
 
     def handle_message(self, message: dict):
@@ -1154,7 +1207,7 @@ context, and messages for you. Act on directives as appropriate.
 
         # Engagement check
         if not self.judge.should_respond(message, stream):
-            self.logger.debug(f"Skipping message in #{stream}>{topic} from {sender}")
+            self.logger.info(f"Skipping #{stream}>{topic} from {sender}: {self.judge.last_reason}")
             return
 
         # Cooldown check
@@ -1239,18 +1292,6 @@ context, and messages for you. Act on directives as appropriate.
             self.logger.warning("Empty response generated, skipping")
             return
 
-        # --- Mirror Council deliberation ---
-        if self._ensure_bg_container():
-            context_summary = (
-                f"#{stream}>{topic} — {sender} said: "
-                f"{message.get('content', '')[:500]}")
-            response_text, council_log = self._run_mirror_council(
-                context_summary, response_text)
-            if council_log:
-                self.state.append_file("council_log.md",
-                    f"\n---\n[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}] "
-                    f"#{stream}>{topic}\n{council_log}\n")
-
         # Safety net: catch any XML blocks the model might still emit
         clean_response, state_updates = self._extract_state_updates(response_text)
         clean_response, sysadmin_messages = self._extract_sysadmin_messages(clean_response)
@@ -1295,6 +1336,7 @@ context, and messages for you. Act on directives as appropriate.
                 "web_search": self._tool_web_search,
                 "run_background": self._tool_run_background,
                 "edit_harness": self._tool_edit_harness,
+                "run_mirror_council": self._tool_run_mirror_council,
             }.get(tool_name)
 
             if handler is None:
@@ -2037,6 +2079,32 @@ context, and messages for you. Act on directives as appropriate.
 
         return blocks
 
+    def _tool_run_mirror_council(self, inp: dict) -> dict:
+        """Tool handler: run the mirror council on a draft."""
+        draft = inp.get("draft", "")
+        context = inp.get("context", "")
+        max_rounds = min(inp.get("max_rounds", 2), 4)
+
+        if not draft:
+            return {"content": "Error: draft is required", "is_error": True}
+
+        if not self._ensure_bg_container():
+            return {"content": "Error: background container unavailable", "is_error": True}
+
+        final_draft, council_log = self._run_mirror_council(
+            context, draft, max_rounds=max_rounds)
+
+        if council_log:
+            self.state.append_file("council_log.md",
+                f"\n---\n[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}] "
+                f"(tool invocation)\n{council_log}\n")
+
+        return {"content": (
+            f"Council deliberation complete.\n\n"
+            f"=== COUNCIL LOG ===\n{council_log}\n\n"
+            f"=== FINAL DRAFT ===\n{final_draft}"
+        )}
+
     def _run_mirror_council(self, context: str, draft: str,
                             max_rounds: int = 4, council_size: int = 3) -> tuple[str, str]:
         """Run the mirror council on a draft response.
@@ -2081,6 +2149,45 @@ context, and messages for you. Act on directives as appropriate.
         finally:
             input_path.unlink(missing_ok=True)
 
+    def _archive_api_response(self, response, stream: str, topic: str,
+                              sender: str, turn: int):
+        """Archive full API response to JSONL for retroactive inspection."""
+        try:
+            usage = response.usage
+            blocks = []
+            for block in response.content:
+                if block.type == "text":
+                    blocks.append({"type": "text", "text": block.text})
+                elif block.type == "thinking":
+                    blocks.append({"type": "thinking",
+                                   "thinking": block.thinking})
+                elif block.type == "tool_use":
+                    blocks.append({"type": "tool_use", "name": block.name,
+                                   "input": block.input, "id": block.id})
+                else:
+                    blocks.append({"type": block.type})
+
+            entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "stream": stream,
+                "topic": topic,
+                "sender": sender,
+                "turn": turn,
+                "model": response.model,
+                "stop_reason": response.stop_reason,
+                "usage": {
+                    "input_tokens": getattr(usage, 'input_tokens', 0),
+                    "output_tokens": getattr(usage, 'output_tokens', 0),
+                    "cache_read": getattr(usage, 'cache_read_input_tokens', 0),
+                    "cache_create": getattr(usage, 'cache_creation_input_tokens', 0),
+                },
+                "content": blocks,
+            }
+            self.state.append_file("api_archive.jsonl",
+                                   json.dumps(entry) + "\n")
+        except Exception as e:
+            self.logger.debug(f"Archive write failed: {e}")
+
     def _generate_response_with_tools_session(
             self, system: list[dict], session: ConversationSession,
             stream: str, topic: str, sender: str, message: dict) -> str:
@@ -2096,7 +2203,7 @@ context, and messages for you. Act on directives as appropriate.
                     response = self.anthropic.messages.create(
                         model=self.model,
                         max_tokens=MAX_RESPONSE_TOKENS,
-                        thinking={"type": "adaptive", "budget_tokens": THINKING_BUDGET},
+                        thinking={"type": "adaptive"},
                         system=system,
                         tools=self._tool_definitions(),
                         messages=session.messages,
@@ -2111,7 +2218,7 @@ context, and messages for you. Act on directives as appropriate.
                                 response = self.anthropic.messages.create(
                                     model=self.model,
                                     max_tokens=MAX_RESPONSE_TOKENS,
-                                    thinking={"type": "adaptive", "budget_tokens": THINKING_BUDGET},
+                                    thinking={"type": "adaptive"},
                                     system=system,
                                     tools=self._tool_definitions(),
                                     messages=session.messages,
@@ -2143,6 +2250,10 @@ context, and messages for you. Act on directives as appropriate.
                         f"session #{session.stream}>{session.topic} "
                         f"msg#{session.message_count} "
                         f"({len(session.messages)} msgs in history)")
+
+                # Archive full API response for retroactive inspection
+                self._archive_api_response(
+                    response, stream, topic, sender, turn)
 
                 # Collect text and tool calls
                 tool_use_blocks = []
