@@ -332,6 +332,34 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "add_reaction",
+        "description": (
+            "Add an emoji reaction to a Zulip message. If message_id is omitted, "
+            "reacts to the message that triggered this response."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "integer",
+                    "description": (
+                        "The Zulip message ID to react to. "
+                        "Omit to react to the triggering message."
+                    )
+                },
+                "emoji_name": {
+                    "type": "string",
+                    "description": (
+                        "The emoji name (without colons). "
+                        "Examples: 'thumbs_up', 'octopus', 'laughing', "
+                        "'100', 'thinking', 'wave'"
+                    )
+                }
+            },
+            "required": ["emoji_name"]
+        }
+    },
+    {
         "name": "run_mirror_council",
         "description": (
             "Run your internal Mirror Council on a draft response. "
