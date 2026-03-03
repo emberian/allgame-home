@@ -101,6 +101,25 @@ def _h_run_mirror_council(inp, ctx):
     return background_tools.run_mirror_council_tool(inp, ctx.state)
 
 
+def _h_add_reaction(inp, ctx):
+    """Add an emoji reaction to a message."""
+    message_id = inp.get("message_id")
+    emoji_name = inp.get("emoji_name", "")
+    if not message_id:
+        # Default to the triggering message
+        message_id = ctx.message.get("id")
+    if not message_id:
+        return {"content": "No message_id provided and no triggering message available.", "is_error": True}
+    result = ctx.zulip.add_reaction({
+        "message_id": message_id,
+        "emoji_name": emoji_name,
+    })
+    if result.get("result") == "success":
+        return {"content": f"Reacted with :{emoji_name}: to message {message_id}"}
+    else:
+        return {"content": f"Failed to add reaction: {result}", "is_error": True}
+
+
 _HANDLERS = {
     "read_state_file": _h_read_state_file,
     "write_state_file": _h_write_state_file,
