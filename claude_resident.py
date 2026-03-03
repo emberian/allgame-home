@@ -356,17 +356,21 @@ Community member. Player in allgame.
         with open(path, "a") as f:
             f.write(content)
 
-    def log_message(self, stream: str, topic: str, sender: str, content: str, timestamp: str):
+    def log_message(self, stream: str, topic: str, sender: str, content: str,
+                    timestamp: str, msg_id: int | None = None):
         """Log a message to the stream/topic's rolling conversation buffer."""
         safe_stream = _safe_filename(stream)
         safe_topic = _safe_filename(topic) if topic else "_notopic"
         log_path = f"channels/{safe_stream}/{safe_topic}.jsonl"
-        entry = json.dumps({
+        entry_data = {
             "ts": timestamp,
             "topic": topic,
             "sender": sender,
             "content": content,
-        }) + "\n"
+        }
+        if msg_id is not None:
+            entry_data["msg_id"] = msg_id
+        entry = json.dumps(entry_data) + "\n"
         self.append_file(log_path, entry)
         self._trim_log(log_path)
 
@@ -379,16 +383,18 @@ Community member. Player in allgame.
         if len(lines) > max_lines:
             path.write_text("\n".join(lines[-max_lines:]) + "\n")
 
-    def get_recent_topic_context(self, stream: str, topic: str, n: int = 50) -> str:
+    def get_recent_topic_context(self, stream: str, topic: str, n: int = 50,
+                                 reactions: dict[int, dict[str, int]] | None = None) -> str:
         """Get the last N messages from a specific topic as formatted context."""
         safe_stream = _safe_filename(stream)
         safe_topic = _safe_filename(topic)
         path = self.root / f"channels/{safe_stream}/{safe_topic}.jsonl"
         if not path.exists():
             return ""
-        return self._format_log(path, n)
+        return self._format_log(path, n, reactions=reactions)
 
-    def get_recent_stream_context(self, stream: str, n: int = 100) -> str:
+    def get_recent_stream_context(self, stream: str, n: int = 100,
+                                  reactions: dict[int, dict[str, int]] | None = None) -> str:
         """Get the last N messages across all topics in a stream."""
         safe_stream = _safe_filename(stream)
         stream_dir = self.root / f"channels/{safe_stream}"
@@ -405,20 +411,37 @@ Community member. Player in allgame.
                         continue
         all_messages.sort(key=lambda m: m.get("ts", ""))
         recent = all_messages[-n:]
-        return "\n".join(
-            f"[{m['ts']}] #{m.get('topic', '?')} | {m['sender']}: {m['content']}"
-            for m in recent
-        )
+        formatted = []
+        for m in recent:
+            text = f"[{m['ts']}] #{m.get('topic', '?')} | {m['sender']}: {m['content']}"
+            msg_id = m.get("msg_id")
+            if reactions and msg_id and msg_id in reactions:
+                rxns = reactions[msg_id]
+                if rxns:
+                    rxn_str = ", ".join(f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
+                    if rxn_str:
+                        text += f" [{rxn_str}]"
+            formatted.append(text)
+        return "\n".join(formatted)
 
-    def _format_log(self, path: Path, n: int) -> str:
-        """Format the last N lines of a jsonl log file."""
+    def _format_log(self, path: Path, n: int, reactions: dict[int, dict[str, int]] | None = None) -> str:
+        """Format the last N lines of a jsonl log file, optionally annotating with reactions."""
         lines = path.read_text().strip().split("\n")
         recent = lines[-n:]
         formatted = []
         for line in recent:
             try:
                 msg = json.loads(line)
-                formatted.append(f"[{msg['ts']}] {msg['sender']}: {msg['content']}")
+                text = f"[{msg['ts']}] {msg['sender']}: {msg['content']}"
+                # Annotate with reactions if available
+                msg_id = msg.get("msg_id")
+                if reactions and msg_id and msg_id in reactions:
+                    rxns = reactions[msg_id]
+                    if rxns:
+                        rxn_str = ", ".join(f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
+                        if rxn_str:
+                            text += f" [{rxn_str}]"
+                formatted.append(text)
             except (json.JSONDecodeError, KeyError):
                 continue
         return "\n".join(formatted)
@@ -844,6 +867,8 @@ context, and messages for you. Act on directives as appropriate.
         self.sessions = SessionManager()
         self._restart_requested = False
         self.logger = logging.getLogger("claude_resident")
+        # Reaction tracking: {message_id: {"emoji_name": count, ...}}
+        self.reactions: dict[int, dict[str, int]] = {}
 
     # ------------------------------------------------------------------
     # Tool definitions
