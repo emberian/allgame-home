@@ -1753,8 +1753,22 @@ context, and messages for you. Act on directives as appropriate.
                 params={"q": query, "limit": limit},
                 timeout=15,
             )
-            response.raise_for_status()
-            data = response.json()
+
+            # Parse response body before raise_for_status so we get Kagi's error message
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+
+            if response.status_code != 200:
+                errors = data.get("error", [])
+                if errors:
+                    err_msg = "; ".join(e.get("msg", str(e)) for e in errors)
+                else:
+                    err_msg = f"HTTP {response.status_code}"
+                balance = data.get("meta", {}).get("api_balance", "?")
+                self.logger.error(f"Kagi search failed: {err_msg} (balance: ${balance})")
+                return {"content": f"Kagi search error: {err_msg} (balance: ${balance})", "is_error": True}
 
             results = []
             for item in data.get("data", []):
