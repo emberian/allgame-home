@@ -44,7 +44,7 @@ import anthropic
 # ---------------------------------------------------------------------------
 
 DEFAULT_STATE_DIR = Path.home() / "claude_state"
-DEFAULT_MODEL = "claude-opus-4-6"
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
 MAX_CONTEXT_TOKENS = 180_000  # leave headroom in 200k window
 MAX_RESPONSE_TOKENS = 16000
 THINKING_BUDGET = 10000  # tokens for internal reasoning (not shown to users)
