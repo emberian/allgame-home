@@ -1955,6 +1955,41 @@ context, and messages for you. Act on directives as appropriate.
 
         return blocks
 
+    def _run_mirror_council(self, context: str, draft: str,
+                            max_rounds: int = 4, council_size: int = 3) -> tuple[str, str]:
+        """Run the mirror council on a draft response.
+        Returns (final_draft, council_log).
+        """
+        try:
+            ctx_escaped = context.replace("'", "'\\''")
+            draft_escaped = draft.replace("'", "'\\''")
+            cmd = (f"cd /workspace && python3 -c \""
+                   f"import council, json; "
+                   f"r = council.run_council('''{ctx_escaped}''', '''{draft_escaped}''', "
+                   f"max_rounds={max_rounds}, council_size={council_size}); "
+                   f"print(council.format_council_log(r)); "
+                   f"print('===FINAL==='); "
+                   f"print(r['final_draft'])\"")
+            check = subprocess.run(
+                ["docker", "exec", BG_CONTAINER_NAME, "bash", "-c", cmd],
+                capture_output=True, text=True, timeout=180)
+            output = check.stdout
+            if "===FINAL===" in output:
+                parts = output.split("===FINAL===", 1)
+                council_log = parts[0].strip()
+                final_draft = parts[1].strip()
+                self.logger.info(f"Mirror council completed: {len(council_log)} chars log")
+                return final_draft, council_log
+            else:
+                self.logger.warning(f"Mirror council unexpected output: {output[:500]}")
+                return draft, f"Council inconclusive:\n{output[:1000]}"
+        except subprocess.TimeoutExpired:
+            self.logger.warning("Mirror council timed out")
+            return draft, "Council timed out (180s)"
+        except Exception as e:
+            self.logger.warning(f"Mirror council error: {e}")
+            return draft, f"Council error: {e}"
+
     def _generate_response_with_tools_session(
             self, system: list[dict], session: ConversationSession,
             stream: str, topic: str, sender: str, message: dict) -> str:
