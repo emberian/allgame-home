@@ -22,6 +22,11 @@ SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
 MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
 TYPING_HOLDOFF_TIMEOUT = 30  # max seconds to wait for someone to finish typing
 
+# Metacognitive loop
+METACOG_DEBOUNCE_SECONDS = 7200  # 2 hours — min gap between metacog runs
+METACOG_CHECK_INTERVAL = 60  # seconds between background trigger checks
+METACOG_MAX_TOOL_TURNS = 50  # more than conversation (30) — metacog does thorough curation
+
 # Resolve relative to the package directory, not __file__
 HARNESS_DIR = Path(__file__).resolve().parent.parent
 HARNESS_PATH = HARNESS_DIR / "claude_resident.py"  # legacy shim location

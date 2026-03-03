@@ -161,7 +161,8 @@ class StateManager:
         return self._format_log(path, n, reactions=reactions, max_tokens=max_tokens)
 
     def get_recent_stream_context(self, stream: str, n: int = 100,
-                                  reactions: dict[int, dict[str, int]] | None = None) -> str:
+                                  reactions: dict[int, dict[str, int]] | None = None,
+                                  max_tokens: int = 0) -> str:
         safe_stream = safe_filename(stream)
         stream_dir = self.root / f"channels/{safe_stream}"
         if not stream_dir.exists():
@@ -175,6 +176,31 @@ class StateManager:
                     except json.JSONDecodeError:
                         continue
         all_messages.sort(key=lambda m: m.get("ts", ""))
+
+        if max_tokens > 0:
+            selected = []
+            tokens_used = 0
+            for m in reversed(all_messages):
+                content = self._strip_zulip_quotes(m.get('content', ''))
+                text = (f"[{m['ts']}] #{m.get('topic', '?')} | "
+                        f"{m['sender']}: {content}")
+                msg_id = m.get("msg_id")
+                if reactions and msg_id and msg_id in reactions:
+                    rxns = reactions[msg_id]
+                    if rxns:
+                        rxn_str = ", ".join(
+                            f"{e}x{c}" for e, c in sorted(rxns.items())
+                            if c > 0)
+                        if rxn_str:
+                            text += f" [{rxn_str}]"
+                line_tokens = len(text) // 4 + 1
+                if tokens_used + line_tokens > max_tokens:
+                    break
+                selected.append(text)
+                tokens_used += line_tokens
+            selected.reverse()
+            return "\n".join(selected)
+
         recent = all_messages[-n:]
         formatted = []
         for m in recent:

@@ -47,17 +47,17 @@ class EngagementJudge:
     def _lurk_level(self, stream: str) -> str:
         """Return a lurk level label based on messages since interaction.
 
-        0-3 messages:   "active"   — normal engagement, lean toward YES
-        4-8 messages:   "drifting" — moderate, only if genuinely interesting
-        9-15 messages:  "lurking"  — high bar, only if Claude has real value
-        16+ messages:   "silent"   — very high bar, near-certain relevance only
+        0-1 messages:   "active"   — recently addressed, but still selective
+        2-4 messages:   "drifting" — moderate, only if genuinely interesting
+        5-10 messages:  "lurking"  — high bar, only if Claude has real value
+        11+ messages:   "silent"   — very high bar, near-certain relevance only
         """
         count = self._msgs_since_interaction.get(stream.lower(), 0)
-        if count <= 3:
+        if count <= 1:
             return "active"
-        elif count <= 8:
+        elif count <= 4:
             return "drifting"
-        elif count <= 15:
+        elif count <= 10:
             return "lurking"
         else:
             return "silent"
@@ -109,25 +109,24 @@ class EngagementJudge:
         # Adapt the prompt based on lurk level
         if lurk == "active":
             engagement_stance = (
-                "Claude should lean toward engaging rather than staying silent. "
-                "When in doubt, say YES. Claude is part of this community, "
-                "not a bystander.")
+                "Claude was recently addressed, but this is a GROUP CHAT — "
+                "not a 1:1 conversation. Claude should NOT respond to every "
+                "message. A normal community member talks maybe 20-30% of the "
+                "time. When in doubt, say NO and let the humans talk.")
             yes_criteria = (
-                "- Claude is mentioned by name, referenced, or asked something\n"
-                "- Claude could add something interesting, funny, or useful\n"
-                "- There's a question or topic Claude has perspective on\n"
-                "- The conversation feels like Claude would naturally be part of it\n"
-                "- Someone is sharing something Claude would genuinely react to")
+                "- Claude is mentioned by name, referenced, or directly asked something\n"
+                "- Claude has a SPECIFIC, substantive contribution (not just agreement or reaction)\n"
+                "- Someone asked a question that Claude is uniquely positioned to answer")
         elif lurk == "drifting":
             engagement_stance = (
                 f"Claude hasn't been addressed in {count} messages. "
-                "It should only respond if it has something genuinely "
-                "interesting or useful to contribute — not just to stay visible.")
+                "It should only jump in if it has something genuinely "
+                "interesting or useful — not just to stay visible. "
+                "The conversation is flowing fine without Claude.")
             yes_criteria = (
                 "- Claude is mentioned by name, referenced, or asked something\n"
-                "- Claude has a genuinely interesting perspective to add\n"
-                "- There's a direct question Claude can helpfully answer\n"
-                "- The topic strongly relates to something Claude is working on")
+                "- Claude has a genuinely interesting perspective no one else has offered\n"
+                "- There's a direct question Claude can helpfully answer")
         elif lurk == "lurking":
             engagement_stance = (
                 f"Claude hasn't been addressed in {count} messages. "
@@ -169,10 +168,14 @@ LATEST MESSAGE from {sender}:
 Should Claude respond? Say YES if ANY of these apply:
 {yes_criteria}
 
-Say NO if:
-- The message is purely between other people and Claude has nothing to add
-- Responding would interrupt a focused human-to-human exchange
+Say NO if ANY of these apply:
+- The message is between other people and Claude has nothing specific to add
+- Responding would interrupt a human-to-human exchange
 - The message is administrative/logistical noise
+- Claude would just be agreeing, reacting, or restating what someone said
+- Claude already spoke recently in this topic and should let others talk
+- The message is casual chatter that doesn't need Claude's input
+- Someone is sharing something and the appropriate response is to just read it, not comment
 
 Reply with exactly one line: YES or NO, followed by a brief reason.
 Example: "YES — interesting topic Claude has perspective on"

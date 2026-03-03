@@ -53,8 +53,10 @@ class ClaudeResident:
         self.judge = judge
         self.model = model
         self.last_response_time = 0
+        self._last_session_activity = 0.0
         self._sandbox_dir = None
         self.sessions = SessionManager()
+        self._metacog_runner = None
         self._restart_requested = False
         self.logger = logging.getLogger("claude_resident")
         # Reaction tracking (capped to prevent unbounded growth)
@@ -106,8 +108,11 @@ class ClaudeResident:
         msg_id = message.get("id")
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        self.state.log_message(stream, topic, sender, content, timestamp,
-                               msg_id=msg_id)
+        # Skip logging if already indexed (e.g., from backfill/replay)
+        already_logged = msg_id and msg_id in self._msg_index
+        if not already_logged:
+            self.state.log_message(stream, topic, sender, content, timestamp,
+                                   msg_id=msg_id)
 
         if msg_id:
             self._msg_index[msg_id] = {
@@ -212,7 +217,8 @@ class ClaudeResident:
             return
 
         if not response_text or not response_text.strip():
-            self.logger.warning("Empty response generated, skipping")
+            self.logger.info(
+                f"Observe mode: #{stream}>{topic} — no visible response")
             return
 
         clean_response, state_updates = _extract_state_updates(response_text)
@@ -244,6 +250,9 @@ class ClaudeResident:
             }
 
         self.last_response_time = time.time()
+        self._last_session_activity = time.time()
+        if self._metacog_runner:
+            self._metacog_runner.notify_activity()
 
     # ------------------------------------------------------------------
     # Reaction handling

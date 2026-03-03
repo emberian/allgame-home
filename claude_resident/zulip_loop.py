@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 
 from claude_resident.config import HARNESS_DIR
+from claude_resident.metacog import MetacogRunner
 from claude_resident.reactions import emoji_display
 from claude_resident.sandbox import ensure_bg_container, stop_bg_container
 from claude_resident.util import safe_filename
@@ -111,6 +112,67 @@ def backfill_history(resident):
                 f"Error backfilling #{stream}: {e}", exc_info=True)
 
 
+def replay_pending(resident):
+    """After restart, check for unreplied messages and process them.
+
+    For each standing stream, fetches the tail of recent messages, groups
+    by topic, and replays any topic where Claude wasn't the last speaker.
+    Messages are already in local logs from backfill — handle_message
+    skips re-logging via the msg_index dedup.
+    """
+    bot_name = resident.judge.bot_name
+    pending = []
+
+    for stream in resident.judge.standing_streams:
+        try:
+            result = resident.zulip.get_messages({
+                "anchor": "newest",
+                "num_before": 50,
+                "num_after": 0,
+                "narrow": json.dumps(
+                    [{"operator": "channel", "operand": stream}]),
+                "apply_markdown": False,
+            })
+            if result.get("result") != "success":
+                continue
+
+            messages = result.get("messages", [])
+            if not messages:
+                continue
+
+            # Group by topic, keep the last message per topic
+            by_topic: dict[str, dict] = {}
+            for msg in messages:
+                topic = msg.get("subject", "")
+                by_topic[topic] = msg
+
+            for topic, last_msg in by_topic.items():
+                sender = last_msg.get("sender_full_name", "").lower()
+                if bot_name in sender:
+                    continue
+                pending.append(last_msg)
+
+        except Exception as e:
+            logger.error(f"Error checking pending in #{stream}: {e}",
+                         exc_info=True)
+
+    if not pending:
+        logger.info("Replay: no unreplied messages found")
+        return
+
+    logger.info(f"Replay: {len(pending)} topics with unreplied messages")
+    for msg in pending:
+        stream = msg.get("display_recipient", "?")
+        topic = msg.get("subject", "?")
+        sender = msg.get("sender_full_name", "?")
+        logger.info(f"Replay: #{stream}>{topic} from {sender}")
+        try:
+            resident.handle_message(msg)
+        except Exception as e:
+            logger.error(f"Replay error #{stream}>{topic}: {e}",
+                         exc_info=True)
+
+
 def run(resident):
     """Main event loop — register for Zulip events and process them."""
     logger.info("Claude resident starting up...")
@@ -127,6 +189,14 @@ def run(resident):
         resident.state._copy_harness_source()
     except Exception:
         pass
+
+    # Check for unreplied messages from before restart
+    replay_pending(resident)
+
+    # Start metacognitive loop
+    metacog_runner = MetacogRunner(resident)
+    resident._metacog_runner = metacog_runner
+    metacog_runner.start()
 
     # Pre-populate stream ID map for typing events
     try:

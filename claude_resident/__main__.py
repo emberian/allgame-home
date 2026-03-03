@@ -39,6 +39,9 @@ def main():
     parser.add_argument("--arrive", action="store_true",
                         help="First boot — let the resident post its "
                         "arrival message and exit")
+    parser.add_argument("--metacog", action="store_true",
+                        help="Run one metacognitive self-curation cycle "
+                        "and exit")
     parser.add_argument("--_supervised", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -49,7 +52,8 @@ def main():
     )
 
     # One-shot modes: run directly, no supervisor needed
-    if args._supervised or args.arrive or args.reflect or args.check_ambient:
+    if (args._supervised or args.arrive or args.reflect
+            or args.check_ambient or args.metacog):
         _run_directly(args)
         return
 
@@ -95,6 +99,9 @@ def _run_directly(args):
         resident.reflect()
     elif args.check_ambient:
         resident.check_ambient()
+    elif args.metacog:
+        from claude_resident.metacog import run_metacog
+        run_metacog(resident)
     else:
         zulip_loop.run(resident)
 
