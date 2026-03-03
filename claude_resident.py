@@ -766,6 +766,11 @@ in the narrative fully. Don't moralize about the fiction from outside it.
   both Zulip uploads and external image URLs. If an image fails to load,
   you'll only see the markdown link — in that case, ask for a description.
 
+## Reactions
+- You can see emoji reactions on messages. In your topic history, messages
+  with reactions are annotated like: [👍x2, 🎉x1]. Use this social feedback
+  to gauge how your messages land. Reactions arrive in real-time.
+
 ## Tools
 You have tools for interacting with your state directory and searching messages.
 
@@ -1227,10 +1232,11 @@ context, and messages for you. Act on directives as appropriate.
 
         sender = message.get("sender_full_name", "unknown")
         content = message.get("content", "")
+        msg_id = message.get("id")
         timestamp = datetime.now(timezone.utc).isoformat()
 
         # Log the message regardless of whether we respond
-        self.state.log_message(stream, topic, sender, content, timestamp)
+        self.state.log_message(stream, topic, sender, content, timestamp, msg_id=msg_id)
 
         # Engagement check
         if not self.judge.should_respond(message, stream):
@@ -1338,6 +1344,42 @@ context, and messages for you. Act on directives as appropriate.
         self.state.log_message(stream, topic, "Claude", clean_response.strip(), timestamp)
 
         self.last_response_time = time.time()
+
+    @staticmethod
+    def _emoji_display(emoji_name: str, emoji_code: str = "",
+                       reaction_type: str = "") -> str:
+        """Convert Zulip emoji info to a display character."""
+        if reaction_type == "unicode_emoji" and emoji_code:
+            try:
+                return "".join(chr(int(c, 16)) for c in emoji_code.split("-"))
+            except (ValueError, OverflowError):
+                pass
+        return f":{emoji_name}:"
+
+    def _handle_reaction_event(self, event: dict):
+        """Track emoji reactions on messages."""
+        op = event.get("op")  # "add" or "remove"
+        msg_id = event.get("message_id")
+        emoji = self._emoji_display(
+            event.get("emoji_name", "?"),
+            event.get("emoji_code", ""),
+            event.get("reaction_type", ""),
+        )
+
+        if not msg_id:
+            return
+
+        if op == "add":
+            if msg_id not in self.reactions:
+                self.reactions[msg_id] = {}
+            self.reactions[msg_id][emoji] = self.reactions[msg_id].get(emoji, 0) + 1
+        elif op == "remove":
+            if msg_id in self.reactions and emoji in self.reactions[msg_id]:
+                self.reactions[msg_id][emoji] -= 1
+                if self.reactions[msg_id][emoji] <= 0:
+                    del self.reactions[msg_id][emoji]
+                if not self.reactions[msg_id]:
+                    del self.reactions[msg_id]
 
     # ------------------------------------------------------------------
     # Tool execution
@@ -1450,9 +1492,11 @@ context, and messages for you. Act on directives as appropriate.
         count = min(inp.get("count", 30), 100)
 
         if topic:
-            context = self.state.get_recent_topic_context(stream, topic, n=count)
+            context = self.state.get_recent_topic_context(
+                stream, topic, n=count, reactions=self.reactions)
         else:
-            context = self.state.get_recent_stream_context(stream, n=count)
+            context = self.state.get_recent_stream_context(
+                stream, n=count, reactions=self.reactions)
 
         if query and context:
             lines = context.split("\n")
@@ -2102,7 +2146,8 @@ context, and messages for you. Act on directives as appropriate.
         if is_first_message:
             tier4_parts = []
             if topic:
-                topic_context = self.state.get_recent_topic_context(stream, topic, n=200)
+                topic_context = self.state.get_recent_topic_context(
+                    stream, topic, n=200, reactions=self.reactions)
                 if topic_context:
                     tier4_parts.append(
                         f'<topic_history stream="{stream}" topic="{topic}">'
@@ -2558,7 +2603,8 @@ context, and messages for you. Act on directives as appropriate.
             sections.append(f"<scratchpad>\n{scratchpad}\n</scratchpad>")
 
         for stream in self.judge.standing_streams:
-            context = self.state.get_recent_stream_context(stream, n=100)
+            context = self.state.get_recent_stream_context(
+                stream, n=100, reactions=self.reactions)
             if context:
                 sections.append(f"<stream_history stream=\"{stream}\">\n{context}\n</stream_history>")
 
@@ -2644,7 +2690,8 @@ will be appended to your journal."""
         scratchpad = self.state.read_file("scratchpad.md")
 
         for stream in self.judge.standing_streams:
-            context = self.state.get_recent_stream_context(stream, n=50)
+            context = self.state.get_recent_stream_context(
+                stream, n=50, reactions=self.reactions)
             if not context:
                 continue
 
@@ -2906,13 +2953,27 @@ about this moment."""
                 for msg in messages:
                     ts = datetime.fromtimestamp(
                         msg.get("timestamp", 0), tz=timezone.utc).isoformat()
+                    msg_id = msg.get("id")
                     self.state.log_message(
                         stream=msg.get("display_recipient", stream),
                         topic=msg.get("subject", ""),
                         sender=msg.get("sender_full_name", "unknown"),
                         content=msg.get("content", ""),
                         timestamp=ts,
+                        msg_id=msg_id,
                     )
+                    # Parse reactions from backfilled messages
+                    if msg_id and msg.get("reactions"):
+                        rxns: dict[str, int] = {}
+                        for r in msg["reactions"]:
+                            display = self._emoji_display(
+                                r.get("emoji_name", "?"),
+                                r.get("emoji_code", ""),
+                                r.get("reaction_type", ""),
+                            )
+                            rxns[display] = rxns.get(display, 0) + 1
+                        if rxns:
+                            self.reactions[msg_id] = rxns
 
                 # Count per topic
                 topic_counts = {}
@@ -2946,7 +3007,7 @@ about this moment."""
 
         # Register the event queue
         result = self.zulip.register(
-            event_types=["message"],
+            event_types=["message", "reaction"],
             narrow=[],  # all messages we can see
         )
 
@@ -2978,6 +3039,8 @@ about this moment."""
 
                         if event.get("type") == "message":
                             self.handle_message(event["message"])
+                        elif event.get("type") == "reaction":
+                            self._handle_reaction_event(event)
 
                     # Check for self-edit restart request
                     if self._restart_requested:
