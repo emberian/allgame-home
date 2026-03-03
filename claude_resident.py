@@ -2102,7 +2102,7 @@ context, and messages for you. Act on directives as appropriate.
         if is_first_message:
             tier4_parts = []
             if topic:
-                topic_context = self.state.get_recent_topic_context(stream, topic, n=20)
+                topic_context = self.state.get_recent_topic_context(stream, topic, n=200)
                 if topic_context:
                     tier4_parts.append(
                         f'<topic_history stream="{stream}" topic="{topic}">'
