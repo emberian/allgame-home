@@ -424,6 +424,18 @@ Community member. Player in allgame.
             formatted.append(text)
         return "\n".join(formatted)
 
+    @staticmethod
+    def _strip_zulip_quotes(content: str) -> str:
+        """Strip Zulip quote-reply blocks to avoid duplicating context.
+        Removes the @_**User** [said](url):\\n```quote...``` pattern."""
+        # Remove full reply blocks: attribution line + quote block
+        content = re.sub(
+            r'@_\*\*[^*]+\*\*\s*\[said\]\([^)]*\):\s*\n```quote\n.*?\n```\n?',
+            '', content, flags=re.DOTALL)
+        # Remove any remaining orphaned quote blocks
+        content = re.sub(r'```quote\n.*?\n```\n?', '', content, flags=re.DOTALL)
+        return content.strip()
+
     def _format_log(self, path: Path, n: int, reactions: dict[int, dict[str, int]] | None = None) -> str:
         """Format the last N lines of a jsonl log file, optionally annotating with reactions."""
         lines = path.read_text().strip().split("\n")
@@ -432,7 +444,8 @@ Community member. Player in allgame.
         for line in recent:
             try:
                 msg = json.loads(line)
-                text = f"[{msg['ts']}] {msg['sender']}: {msg['content']}"
+                content = self._strip_zulip_quotes(msg['content'])
+                text = f"[{msg['ts']}] {msg['sender']}: {content}"
                 # Annotate with reactions if available
                 msg_id = msg.get("msg_id")
                 if reactions and msg_id and msg_id in reactions:
