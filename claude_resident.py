@@ -791,9 +791,10 @@ that stays alive across all your interactions. Same image as the sandbox but wit
 long-running analysis, background agents, persistent workspaces — anything that
 should survive beyond a single response. Use timeout=0 for fire-and-forget processes.
 
-**Self-modification:** Your full harness source is always in your context (see
-below). To edit it, use edit_harness (string replacement with git safety).
-The harness copy is refreshed on each boot.
+**Self-modification:** Your harness architecture summary is in your context.
+To edit, first read_state_file("harness.py") for exact source, then use
+edit_harness (string replacement with git safety). The harness copy is
+refreshed on each boot.
 All edits go through git — the current state is committed before changes,
 the edit is verified (must parse), and the result is committed. If an edit
 breaks parsing, it's automatically rolled back. If it causes a runtime crash,
