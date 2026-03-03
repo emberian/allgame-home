@@ -2149,6 +2149,8 @@ context, and messages for you. Act on directives as appropriate.
                 for block in response.content:
                     if block.type == "text":
                         collected_text.append(block.text)
+                    elif block.type == "thinking":
+                        pass  # internal reasoning — not shown to users
                     elif block.type == "tool_use":
                         tool_use_blocks.append(block)
 
