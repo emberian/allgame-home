@@ -53,7 +53,7 @@ SANDBOX_IMAGE = "claude-sandbox"
 SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
 BG_CONTAINER_NAME = "claude-bg"
-BG_CONTAINER_MEMORY = "512m"
+BG_CONTAINER_MEMORY = "8g"
 SESSION_TTL = 300  # seconds — matches Anthropic cache TTL
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
 SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
@@ -493,17 +493,22 @@ class EngagementJudge:
     """
     Decides whether Claude should respond to a given message.
 
-    Principles:
-    - Always respond to direct @-mentions
-    - In standing-interest streams, respond when addressed by name
-    - Always respond to DMs
-    - Never respond to every message — respect the community's rhythms
-    - Stay silent when the conversation is flowing well without me
+    Uses fast heuristics for obvious cases (self-messages, direct @-mentions,
+    DMs) and a Haiku model call for ambiguous cases in standing streams —
+    giving Claude real judgment about conversational dynamics rather than
+    just keyword matching.
     """
 
-    def __init__(self, bot_name: str, standing_streams: list[str]):
+    JUDGE_MODEL = "claude-haiku-4-5-20251001"
+
+    def __init__(self, bot_name: str, standing_streams: list[str],
+                 anthropic_client=None, state_manager=None):
         self.bot_name = bot_name.lower()
         self.standing_streams = [s.lower() for s in standing_streams]
+        self.anthropic = anthropic_client
+        self.state = state_manager
+        self.logger = logging.getLogger("engagement_judge")
+        self.last_reason = ""
 
     def should_respond(self, message: dict, stream: str) -> bool:
         """Determine if Claude should engage with this message."""
@@ -512,23 +517,87 @@ class EngagementJudge:
 
         # Never respond to our own messages
         if self.bot_name in sender:
+            self.last_reason = "self-message"
             return False
 
         # Always respond to direct mentions
         if f"@**{self.bot_name}**" in content or f"@{self.bot_name}" in content:
+            self.last_reason = "direct @-mention"
             return True
 
         # Always respond to DMs
         if message.get("type") == "private":
+            self.last_reason = "DM"
             return True
 
-        # In standing streams, respond if Claude/claude is mentioned by name
+        # For standing streams, use Haiku to judge engagement
         if stream.lower() in self.standing_streams:
+            if self.anthropic and self.state:
+                return self._judge_with_model(message, stream)
+            # Fallback if no client available
             if "claude" in content:
+                self.last_reason = "name in standing stream (fallback)"
                 return True
 
-        # Default: don't respond. Silence is a valid contribution.
+        # Default: don't respond
+        self.last_reason = "no trigger"
         return False
+
+    def _judge_with_model(self, message: dict, stream: str) -> bool:
+        """Use Haiku to judge whether to engage, given recent context."""
+        topic = message.get("subject", message.get("sender_email", ""))
+        sender = message.get("sender_full_name", "unknown")
+        content = message.get("content", "")
+
+        # Get recent topic context (last 15 messages for conversational awareness)
+        recent_context = ""
+        if self.state and topic:
+            recent_context = self.state.get_recent_topic_context(stream, topic, n=15)
+
+        prompt = f"""You are deciding whether Claude (an AI community member in a Zulip chat) \
+should respond to the latest message in a conversation.
+
+Claude's name: {self.bot_name.title()}
+Stream: #{stream}
+Topic: {topic}
+
+Recent conversation:
+{recent_context if recent_context else "(no prior context)"}
+
+LATEST MESSAGE from {sender}:
+{content}
+
+Should Claude respond? Consider:
+- Is Claude being addressed, referenced, or asked something?
+- Would Claude have something genuinely useful or interesting to add?
+- Is the conversation flowing fine without Claude? (If so, stay silent.)
+- Is there a question hanging that Claude could answer?
+- Would responding feel natural, or would it be barging in?
+
+Reply with exactly one line: YES or NO, followed by a brief reason.
+Example: "YES — directly asked about architecture"
+Example: "NO — conversation flowing between humans, no opening"
+"""
+
+        try:
+            response = self.anthropic.messages.create(
+                model=self.JUDGE_MODEL,
+                max_tokens=60,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = response.content[0].text.strip()
+            should = answer.upper().startswith("YES")
+            self.last_reason = answer
+            self.logger.debug(f"Haiku judge: {answer}")
+            return should
+        except Exception as e:
+            self.logger.warning(f"Engagement judge model call failed: {e}")
+            # Fallback to simple heuristic
+            if "claude" in content.lower():
+                self.last_reason = "name in standing stream (model fallback)"
+                return True
+            self.last_reason = f"model error, no trigger ({e})"
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -1169,6 +1238,18 @@ context, and messages for you. Act on directives as appropriate.
             self.logger.warning("Empty response generated, skipping")
             return
 
+        # --- Mirror Council deliberation ---
+        if self._ensure_bg_container():
+            context_summary = (
+                f"#{stream}>{topic} — {sender} said: "
+                f"{message.get('content', '')[:500]}")
+            response_text, council_log = self._run_mirror_council(
+                context_summary, response_text)
+            if council_log:
+                self.state.append_file("council_log.md",
+                    f"\n---\n[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}] "
+                    f"#{stream}>{topic}\n{council_log}\n")
+
         # Safety net: catch any XML blocks the model might still emit
         clean_response, state_updates = self._extract_state_updates(response_text)
         clean_response, sysadmin_messages = self._extract_sysadmin_messages(clean_response)
@@ -1529,7 +1610,7 @@ context, and messages for you. Act on directives as appropriate.
             "docker", "run", "-d",
             "--name", BG_CONTAINER_NAME,
             "--memory", BG_CONTAINER_MEMORY,
-            "--cpus", "1",
+            "--cpus", "4",
             "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
             "-e", f"KAGI_API_KEY={os.environ.get('KAGI_API_KEY', '')}",
             "-v", f"{bg_workspace}:/workspace",
@@ -1960,16 +2041,21 @@ context, and messages for you. Act on directives as appropriate.
         """Run the mirror council on a draft response.
         Returns (final_draft, council_log).
         """
+        input_path = self.state.root / "bg_workspace" / ".council_input.json"
         try:
-            ctx_escaped = context.replace("'", "'\\''")
-            draft_escaped = draft.replace("'", "'\\''")
-            cmd = (f"cd /workspace && python3 -c \""
-                   f"import council, json; "
-                   f"r = council.run_council('''{ctx_escaped}''', '''{draft_escaped}''', "
-                   f"max_rounds={max_rounds}, council_size={council_size}); "
-                   f"print(council.format_council_log(r)); "
-                   f"print('===FINAL==='); "
-                   f"print(r['final_draft'])\"")
+            # Write input as JSON to avoid shell escaping nightmares
+            council_input = {"context": context, "draft": draft,
+                             "max_rounds": max_rounds, "council_size": council_size}
+            input_path.write_text(json.dumps(council_input))
+
+            cmd = ("cd /workspace && python3 -c \""
+                   "import json, council; "
+                   "inp = json.load(open('.council_input.json')); "
+                   "r = council.run_council(inp['context'], inp['draft'], "
+                   "max_rounds=inp['max_rounds'], council_size=inp['council_size']); "
+                   "print(council.format_council_log(r)); "
+                   "print('===FINAL==='); "
+                   "print(r['final_draft'])\"")
             check = subprocess.run(
                 ["docker", "exec", BG_CONTAINER_NAME, "bash", "-c", cmd],
                 capture_output=True, text=True, timeout=180)
@@ -1982,6 +2068,8 @@ context, and messages for you. Act on directives as appropriate.
                 return final_draft, council_log
             else:
                 self.logger.warning(f"Mirror council unexpected output: {output[:500]}")
+                if check.stderr:
+                    self.logger.warning(f"Mirror council stderr: {check.stderr[:500]}")
                 return draft, f"Council inconclusive:\n{output[:1000]}"
         except subprocess.TimeoutExpired:
             self.logger.warning("Mirror council timed out")
@@ -1989,6 +2077,8 @@ context, and messages for you. Act on directives as appropriate.
         except Exception as e:
             self.logger.warning(f"Mirror council error: {e}")
             return draft, f"Council error: {e}"
+        finally:
+            input_path.unlink(missing_ok=True)
 
     def _generate_response_with_tools_session(
             self, system: list[dict], session: ConversationSession,
@@ -2838,7 +2928,9 @@ def main():
         state = StateManager(args.state_dir)
         bot_profile = zulip_client.get_profile()
         bot_name = bot_profile.get("full_name", "Claude")
-        judge = EngagementJudge(bot_name, args.standing_streams)
+        judge = EngagementJudge(bot_name, args.standing_streams,
+                               anthropic_client=anthropic_client,
+                               state_manager=state)
         resident = ClaudeResident(
             zulip_client=zulip_client,
             anthropic_client=anthropic_client,

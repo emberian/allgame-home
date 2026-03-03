@@ -479,20 +479,7 @@ class HarnessMonitor:
         def patched(message, stream):
             result = original(message, stream)
             sender = message.get("sender_full_name", "unknown")
-            # Access the last_reason by checking internal state
-            reason = "unknown"
-            # Reconstruct reason from the logic
-            content = message.get("content", "").lower()
-            if judge.bot_name in sender.lower():
-                reason = "self-message"
-            elif f"@**{judge.bot_name}**" in content or f"@{judge.bot_name}" in content:
-                reason = "direct @-mention"
-            elif message.get("type") == "private":
-                reason = "DM"
-            elif stream.lower() in judge.standing_streams and "claude" in content:
-                reason = "name in standing stream"
-            else:
-                reason = "no trigger"
+            reason = getattr(judge, 'last_reason', 'unknown')
 
             monitor.events.put(EngagementDecision(
                 stream=stream,
@@ -1423,7 +1410,8 @@ def main():
         SM = claude_resident.StateManager
         EJ = claude_resident.EngagementJudge
         st = SM(args.state_dir)
-        jg = EJ(bot_name, args.standing_streams)
+        jg = EJ(bot_name, args.standing_streams,
+               anthropic_client=anthropic_client, state_manager=st)
         res = CR(
             zulip_client=zulip_client,
             anthropic_client=anthropic_client,
