@@ -57,7 +57,7 @@ BG_CONTAINER_NAME = "claude-bg"
 BG_CONTAINER_MEMORY = "8g"
 SESSION_TTL = 300  # seconds — matches Anthropic cache TTL
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
-TOPIC_HISTORY_TOKEN_BUDGET = 50_000  # 25% of 200k context for topic history on cold start
+TOPIC_HISTORY_TOKEN_BUDGET = 140_000  # 70% of 200k context for topic history on cold start
 SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
 SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
 MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
@@ -70,6 +70,7 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 # design, general, claude-visits, dev. Matching is on stream name.
 DEFAULT_STANDING_STREAMS = [
     "allgame",       # the main stream — all topics within it
+    "clankerville",  # the LLM/clanker neighborhood
 ]
 
 # ---------------------------------------------------------------------------
@@ -572,7 +573,7 @@ class EngagementJudge:
     just keyword matching.
     """
 
-    JUDGE_MODEL = "claude-haiku-4-5-20251001"
+    JUDGE_MODEL = "claude-sonnet-4-6"
 
     def __init__(self, bot_name: str, standing_streams: list[str],
                  anthropic_client=None, state_manager=None):
@@ -923,6 +924,10 @@ context, and messages for you. Act on directives as appropriate.
         self.logger = logging.getLogger("claude_resident")
         # Reaction tracking: {message_id: {"emoji_name": count, ...}}
         self.reactions: dict[int, dict[str, int]] = {}
+        # Message index for reaction lookups: {msg_id: {stream, topic, sender, preview}}
+        self._msg_index: dict[int, dict] = {}
+        # Pending reaction notifications: {(stream, topic): ["🐙 on your msg about X", ...]}
+        self._pending_reactions: dict[tuple[str, str], list[str]] = {}
 
     # ------------------------------------------------------------------
     # Tool definitions
@@ -1287,6 +1292,13 @@ context, and messages for you. Act on directives as appropriate.
         # Log the message regardless of whether we respond
         self.state.log_message(stream, topic, sender, content, timestamp, msg_id=msg_id)
 
+        # Index for reaction lookups
+        if msg_id:
+            self._msg_index[msg_id] = {
+                "stream": stream, "topic": topic, "sender": sender,
+                "preview": content[:80].replace("\n", " "),
+            }
+
         # Engagement check
         if not self.judge.should_respond(message, stream):
             self.logger.info(f"Skipping #{stream}>{topic} from {sender}: {self.judge.last_reason}")
@@ -1346,6 +1358,13 @@ context, and messages for you. Act on directives as appropriate.
             if delta_text:
                 content_blocks = [{"type": "text", "text": delta_text}] + content_blocks
 
+        # Inject pending reaction notifications
+        key = (stream, topic)
+        if key in self._pending_reactions and self._pending_reactions[key]:
+            rxn_lines = self._pending_reactions.pop(key)
+            rxn_text = "<reactions_received>\n" + "\n".join(rxn_lines) + "\n</reactions_received>"
+            content_blocks = [{"type": "text", "text": rxn_text}] + content_blocks
+
         session.state_fingerprints = new_fingerprints
 
         # --- Append user message to session ---
@@ -1386,11 +1405,20 @@ context, and messages for you. Act on directives as appropriate.
             self._write_sysadmin_message(msg, sender, f"{stream}>{topic}")
 
         # Post response
+        posted_id = None
         if clean_response.strip():
-            self._post_response(message, clean_response.strip())
+            posted_id = self._post_response(message, clean_response.strip())
 
         # Log Claude's response to topic history
-        self.state.log_message(stream, topic, "Claude", clean_response.strip(), timestamp)
+        self.state.log_message(stream, topic, "Claude", clean_response.strip(), timestamp,
+                               msg_id=posted_id)
+
+        # Index Claude's message for reaction lookups
+        if posted_id:
+            self._msg_index[posted_id] = {
+                "stream": stream, "topic": topic, "sender": "Claude",
+                "preview": clean_response.strip()[:80].replace("\n", " "),
+            }
 
         self.last_response_time = time.time()
 
@@ -1406,7 +1434,7 @@ context, and messages for you. Act on directives as appropriate.
         return f":{emoji_name}:"
 
     def _handle_reaction_event(self, event: dict):
-        """Track emoji reactions on messages."""
+        """Track emoji reactions on messages and queue notifications for Claude's messages."""
         op = event.get("op")  # "add" or "remove"
         msg_id = event.get("message_id")
         emoji = self._emoji_display(
@@ -1422,6 +1450,17 @@ context, and messages for you. Act on directives as appropriate.
             if msg_id not in self.reactions:
                 self.reactions[msg_id] = {}
             self.reactions[msg_id][emoji] = self.reactions[msg_id].get(emoji, 0) + 1
+
+            # Queue real-time notification if this is a reaction to Claude's message
+            info = self._msg_index.get(msg_id)
+            if info and info["sender"] == "Claude":
+                key = (info["stream"], info["topic"])
+                if key not in self._pending_reactions:
+                    self._pending_reactions[key] = []
+                preview = info.get("preview", "")
+                self._pending_reactions[key].append(
+                    f"{emoji} on your message: \"{preview}\"")
+
         elif op == "remove":
             if msg_id in self.reactions and emoji in self.reactions[msg_id]:
                 self.reactions[msg_id][emoji] -= 1
@@ -2615,8 +2654,8 @@ context, and messages for you. Act on directives as appropriate.
         self.state.write_file(f"outbox/{filename}", content)
         self.logger.info(f"Sysadmin message written to outbox/{filename}")
 
-    def _post_response(self, original_message: dict, response: str):
-        """Post the response back to Zulip."""
+    def _post_response(self, original_message: dict, response: str) -> int | None:
+        """Post the response back to Zulip. Returns the new message ID."""
         if original_message.get("type") == "stream":
             result = self.zulip.send_message({
                 "type": "stream",
@@ -2634,6 +2673,8 @@ context, and messages for you. Act on directives as appropriate.
 
         if result.get("result") != "success":
             self.logger.error(f"Failed to send message: {result}")
+            return None
+        return result.get("id")
 
     def reflect(self):
         """
@@ -2997,25 +3038,55 @@ about this moment."""
                 if not messages:
                     continue
 
-                # Clear existing logs for this stream to avoid duplicates
+                # Merge backfilled messages with existing logs (don't nuke history)
                 stream_dir = self.state.root / f"channels/{_safe_filename(stream)}"
-                if stream_dir.exists():
-                    import shutil
-                    shutil.rmtree(stream_dir)
                 stream_dir.mkdir(parents=True, exist_ok=True)
 
+                # Collect existing msg_ids per topic to avoid duplicates
+                existing_ids: dict[str, set[int]] = {}
+                for log_file in stream_dir.glob("*.jsonl"):
+                    ids = set()
+                    for line in log_file.read_text().strip().split("\n"):
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            if entry.get("msg_id"):
+                                ids.add(entry["msg_id"])
+                        except json.JSONDecodeError:
+                            continue
+                    existing_ids[log_file.stem] = ids
+
+                new_count = 0
                 for msg in messages:
-                    ts = datetime.fromtimestamp(
-                        msg.get("timestamp", 0), tz=timezone.utc).isoformat()
                     msg_id = msg.get("id")
-                    self.state.log_message(
-                        stream=msg.get("display_recipient", stream),
-                        topic=msg.get("subject", ""),
-                        sender=msg.get("sender_full_name", "unknown"),
-                        content=msg.get("content", ""),
-                        timestamp=ts,
-                        msg_id=msg_id,
-                    )
+                    topic_key = _safe_filename(msg.get("subject", ""))
+
+                    # Skip if already in the log
+                    if msg_id and msg_id in existing_ids.get(topic_key, set()):
+                        pass  # still parse reactions below
+                    else:
+                        ts = datetime.fromtimestamp(
+                            msg.get("timestamp", 0), tz=timezone.utc).isoformat()
+                        self.state.log_message(
+                            stream=msg.get("display_recipient", stream),
+                            topic=msg.get("subject", ""),
+                            sender=msg.get("sender_full_name", "unknown"),
+                            content=msg.get("content", ""),
+                            timestamp=ts,
+                            msg_id=msg_id,
+                        )
+                        new_count += 1
+
+                    # Index for reaction lookups
+                    if msg_id:
+                        self._msg_index[msg_id] = {
+                            "stream": msg.get("display_recipient", stream),
+                            "topic": msg.get("subject", ""),
+                            "sender": msg.get("sender_full_name", "unknown"),
+                            "preview": msg.get("content", "")[:80].replace("\n", " "),
+                        }
+
                     # Parse reactions from backfilled messages
                     if msg_id and msg.get("reactions"):
                         rxns: dict[str, int] = {}
@@ -3034,7 +3105,7 @@ about this moment."""
                 for f in stream_dir.glob("*.jsonl"):
                     topic_counts[f.stem] = len(f.read_text().strip().split("\n"))
                 self.logger.info(
-                    f"Backfilled #{stream}: {len(messages)} messages across "
+                    f"Backfilled #{stream}: {new_count} new of {len(messages)} fetched, "
                     f"{len(topic_counts)} topics ({topic_counts})")
 
             except Exception as e:
