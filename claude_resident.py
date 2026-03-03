@@ -44,7 +44,7 @@ import anthropic
 # ---------------------------------------------------------------------------
 
 DEFAULT_STATE_DIR = Path.home() / "claude_state"
-DEFAULT_MODEL = "claude-opus-4-6"
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
 MAX_CONTEXT_TOKENS = 180_000  # leave headroom in 200k window
 MAX_RESPONSE_TOKENS = 16000
 THINKING_BUDGET = 10000  # tokens for internal reasoning (not shown to users)
@@ -57,6 +57,7 @@ BG_CONTAINER_NAME = "claude-bg"
 BG_CONTAINER_MEMORY = "8g"
 SESSION_TTL = 300  # seconds — matches Anthropic cache TTL
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
+TOPIC_HISTORY_TOKEN_BUDGET = 50_000  # 25% of 200k context for topic history on cold start
 SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
 SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
 MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
@@ -384,14 +385,15 @@ Community member. Player in allgame.
             path.write_text("\n".join(lines[-max_lines:]) + "\n")
 
     def get_recent_topic_context(self, stream: str, topic: str, n: int = 50,
-                                 reactions: dict[int, dict[str, int]] | None = None) -> str:
-        """Get the last N messages from a specific topic as formatted context."""
+                                 reactions: dict[int, dict[str, int]] | None = None,
+                                 max_tokens: int = 0) -> str:
+        """Get recent messages from a topic, optionally capped by token budget."""
         safe_stream = _safe_filename(stream)
         safe_topic = _safe_filename(topic)
         path = self.root / f"channels/{safe_stream}/{safe_topic}.jsonl"
         if not path.exists():
             return ""
-        return self._format_log(path, n, reactions=reactions)
+        return self._format_log(path, n, reactions=reactions, max_tokens=max_tokens)
 
     def get_recent_stream_context(self, stream: str, n: int = 100,
                                   reactions: dict[int, dict[str, int]] | None = None) -> str:
@@ -436,17 +438,51 @@ Community member. Player in allgame.
         content = re.sub(r'```quote\n.*?\n```\n?', '', content, flags=re.DOTALL)
         return content.strip()
 
-    def _format_log(self, path: Path, n: int, reactions: dict[int, dict[str, int]] | None = None) -> str:
-        """Format the last N lines of a jsonl log file, optionally annotating with reactions."""
+    def _format_log(self, path: Path, n: int = 500,
+                    reactions: dict[int, dict[str, int]] | None = None,
+                    max_tokens: int = 0) -> str:
+        """Format log lines, optionally capped by token budget instead of line count.
+
+        If max_tokens > 0, loads messages from the end until the budget is
+        exhausted (ignoring n). Otherwise loads the last n lines.
+        """
         lines = path.read_text().strip().split("\n")
+
+        if max_tokens > 0:
+            # Token-budget mode: walk backwards, accumulate until budget spent
+            selected = []
+            tokens_used = 0
+            for line in reversed(lines):
+                try:
+                    msg = json.loads(line)
+                except (json.JSONDecodeError, KeyError):
+                    continue
+                content = self._strip_zulip_quotes(msg.get('content', ''))
+                text = f"[{msg['ts']}] {msg['sender']}: {content}"
+                msg_id = msg.get("msg_id")
+                if reactions and msg_id and msg_id in reactions:
+                    rxns = reactions[msg_id]
+                    if rxns:
+                        rxn_str = ", ".join(f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
+                        if rxn_str:
+                            text += f" [{rxn_str}]"
+                # Estimate tokens: ~4 chars per token
+                line_tokens = len(text) // 4 + 1
+                if tokens_used + line_tokens > max_tokens:
+                    break
+                selected.append(text)
+                tokens_used += line_tokens
+            selected.reverse()
+            return "\n".join(selected)
+
+        # Fixed-count mode
         recent = lines[-n:]
         formatted = []
         for line in recent:
             try:
                 msg = json.loads(line)
-                content = self._strip_zulip_quotes(msg['content'])
+                content = self._strip_zulip_quotes(msg.get('content', ''))
                 text = f"[{msg['ts']}] {msg['sender']}: {content}"
-                # Annotate with reactions if available
                 msg_id = msg.get("msg_id")
                 if reactions and msg_id and msg_id in reactions:
                     rxns = reactions[msg_id]
@@ -791,7 +827,7 @@ You have tools for interacting with your state directory and searching messages.
 - Your identity (identity.md)
 - Your scratchpad (scratchpad.md)
 - Sysadmin inbox (sysadmin_inbox.md)
-- Recent messages in the topic you're responding to (up to 200)
+- Recent messages in the topic you're responding to (fills ~25% of context window)
 - Notes on the person who messaged you (if they exist)
 - Allgame state (when in the allgame stream)
 
@@ -2160,7 +2196,8 @@ context, and messages for you. Act on directives as appropriate.
             tier4_parts = []
             if topic:
                 topic_context = self.state.get_recent_topic_context(
-                    stream, topic, n=200, reactions=self.reactions)
+                    stream, topic, max_tokens=TOPIC_HISTORY_TOKEN_BUDGET,
+                    reactions=self.reactions)
                 if topic_context:
                     tier4_parts.append(
                         f'<topic_history stream="{stream}" topic="{topic}">'
@@ -2293,13 +2330,17 @@ context, and messages for you. Act on directives as appropriate.
 
         self._set_last_user_cache_control(session.messages)
 
+        # Adaptive thinking is Opus-only; Sonnet needs explicit budget or none
+        thinking_param = ({"type": "adaptive"} if "opus" in self.model
+                          else {"type": "enabled", "budget_tokens": THINKING_BUDGET})
+
         try:
             for turn in range(MAX_TOOL_TURNS):
                 try:
                     response = self.anthropic.messages.create(
                         model=self.model,
                         max_tokens=MAX_RESPONSE_TOKENS,
-                        thinking={"type": "adaptive"},
+                        thinking=thinking_param,
                         system=system,
                         tools=self._tool_definitions(),
                         messages=session.messages,
@@ -2314,7 +2355,7 @@ context, and messages for you. Act on directives as appropriate.
                                 response = self.anthropic.messages.create(
                                     model=self.model,
                                     max_tokens=MAX_RESPONSE_TOKENS,
-                                    thinking={"type": "adaptive"},
+                                    thinking=thinking_param,
                                     system=system,
                                     tools=self._tool_definitions(),
                                     messages=session.messages,
