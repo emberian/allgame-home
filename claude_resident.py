@@ -413,7 +413,7 @@ Community member. Player in allgame.
         recent = all_messages[-n:]
         formatted = []
         for m in recent:
-            text = f"[{m['ts']}] #{m.get('topic', '?')} | {m['sender']}: {m['content']}"
+            text = f"[{m['ts']}] #{m.get('topic', '?')} | {m['sender']}: {self._strip_zulip_quotes(m['content'])}"
             msg_id = m.get("msg_id")
             if reactions and msg_id and msg_id in reactions:
                 rxns = reactions[msg_id]
