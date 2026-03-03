@@ -46,7 +46,8 @@ import anthropic
 DEFAULT_STATE_DIR = Path.home() / "claude_state"
 DEFAULT_MODEL = "claude-opus-4-6"
 MAX_CONTEXT_TOKENS = 180_000  # leave headroom in 200k window
-MAX_RESPONSE_TOKENS = 4096
+MAX_RESPONSE_TOKENS = 16000
+THINKING_BUDGET = 10000  # tokens for internal reasoning (not shown to users)
 COOLDOWN_SECONDS = 2  # minimum gap between responses to avoid firehose behavior
 MAX_TOOL_TURNS = 30  # maximum tool-calling iterations per response
 SANDBOX_IMAGE = "claude-sandbox"
