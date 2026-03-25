@@ -4,6 +4,7 @@ import re
 import json
 import time
 import logging
+import threading
 from datetime import datetime, timezone
 
 import anthropic
@@ -194,6 +195,11 @@ class ClaudeResident:
             content_blocks = [{"type": "text", "text": rxn_text}] + content_blocks
 
         session.state_fingerprints = new_fingerprints
+
+        # Strip base64 image data from older messages to prevent accumulation.
+        # Images are only useful for the turn they arrive — after that, the
+        # model has already seen them and they just waste context.
+        _strip_old_images(session.messages)
         session.messages.append({"role": "user", "content": content_blocks})
 
         # --- Token budget check ---
@@ -207,47 +213,79 @@ class ClaudeResident:
             _trim_session(session, self.logger)
 
         # --- Generate response ---
+        self._send_typing(stream, topic, "start")
+        typing_stop = threading.Event()
+        def _typing_pulse():
+            while not typing_stop.wait(10):
+                self._send_typing(stream, topic, "start")
+        typing_thread = threading.Thread(target=_typing_pulse, daemon=True)
+        typing_thread.start()
         try:
-            response_text = self._generate_response_with_tools_session(
-                system, session, stream, topic, sender, message)
+            internal_text, posted_ids = \
+                self._generate_response_with_tools_session(
+                    system, session, stream, topic, sender, message)
         except Exception as e:
             self.logger.error(
                 f"Response generation failed: {e}", exc_info=True)
             self.sessions.remove(stream, topic)
             return
+        finally:
+            typing_stop.set()
+            self._send_typing(stream, topic, "stop")
 
-        if not response_text or not response_text.strip():
+        # Handle XML fallbacks (safety net for state updates)
+        if internal_text and internal_text.strip():
+            _, state_updates = _extract_state_updates(internal_text)
+            _, sysadmin_messages = _extract_sysadmin_messages(internal_text)
+            for update in state_updates:
+                self.logger.warning(
+                    "Model used XML state_update instead of tool — "
+                    "applying anyway")
+                _apply_state_update(self.state, update, self.logger)
+            for msg in sysadmin_messages:
+                self.logger.warning(
+                    "Model used XML sysadmin_message instead of tool — "
+                    "applying anyway")
+                write_sysadmin_message(
+                    self.state, msg, sender, f"{stream}>{topic}")
+
+        # Log internal monologue (model text that was NOT posted)
+        if internal_text and internal_text.strip():
+            monologue = internal_text.strip()[:200]
             self.logger.info(
-                f"Observe mode: #{stream}>{topic} — no visible response")
-            return
+                f"Internal: #{stream}>{topic} — {monologue}"
+                + ("..." if len(internal_text.strip()) > 200 else ""))
 
-        clean_response, state_updates = _extract_state_updates(response_text)
-        clean_response, sysadmin_messages = _extract_sysadmin_messages(
-            clean_response)
-
-        for update in state_updates:
-            self.logger.warning(
-                "Model used XML state_update instead of tool — applying anyway")
-            _apply_state_update(self.state, update, self.logger)
-        for msg in sysadmin_messages:
-            self.logger.warning(
-                "Model used XML sysadmin_message instead of tool — applying anyway")
-            write_sysadmin_message(
-                self.state, msg, sender, f"{stream}>{topic}")
-
-        posted_id = None
-        if clean_response.strip():
-            posted_id = self._post_response(message, clean_response.strip())
-
-        self.state.log_message(stream, topic, "Claude",
-                               clean_response.strip(), timestamp,
-                               msg_id=posted_id)
-
-        if posted_id:
-            self._msg_index[posted_id] = {
+        # Index any messages posted via send_message tool
+        for pid in posted_ids:
+            self._msg_index[pid] = {
                 "stream": stream, "topic": topic, "sender": "Claude",
-                "preview": clean_response.strip()[:80].replace("\n", " "),
+                "preview": "(posted via send_message)",
             }
+
+        # Log outcome and manage lurk counter
+        if posted_ids:
+            # Reset lurk — Claude spoke publicly
+            self.judge.record_message(stream, is_direct=True)
+            self.logger.info(
+                f"Posted {len(posted_ids)} message(s) in #{stream}>{topic}")
+        elif not internal_text or not internal_text.strip():
+            # Roll back the lurk increment from the judge — processing
+            # without posting shouldn't count against engagement
+            key = stream.lower()
+            if key in self.judge._msgs_since_interaction:
+                self.judge._msgs_since_interaction[key] = max(
+                    0, self.judge._msgs_since_interaction[key] - 1)
+            self.logger.info(
+                f"Observe mode: #{stream}>{topic} — silent")
+        else:
+            # Same rollback — internal monologue without posting
+            key = stream.lower()
+            if key in self.judge._msgs_since_interaction:
+                self.judge._msgs_since_interaction[key] = max(
+                    0, self.judge._msgs_since_interaction[key] - 1)
+            self.logger.info(
+                f"Internal only: #{stream}>{topic} — no public message")
 
         self.last_response_time = time.time()
         self._last_session_activity = time.time()
@@ -299,6 +337,25 @@ class ClaudeResident:
         elif op == "stop":
             self._typing_active.pop(key, None)
 
+    def _send_typing(self, stream: str, topic: str, op: str = "start"):
+        """Send a typing indicator to Zulip."""
+        try:
+            stream_id = None
+            for sid, name in self._stream_id_map.items():
+                if name.lower() == stream.lower():
+                    stream_id = sid
+                    break
+            if stream_id is None:
+                return
+            self.zulip.set_typing_status({
+                "op": op,
+                "type": "stream",
+                "stream_id": stream_id,
+                "topic": topic,
+            })
+        except Exception:
+            pass  # never block on typing indicators
+
     def _wait_for_typing(self, stream: str, topic: str):
         """If someone is actively typing in this topic, wait for them to finish.
 
@@ -345,9 +402,14 @@ class ClaudeResident:
 
     def _generate_response_with_tools_session(
             self, system: list[dict], session, stream: str, topic: str,
-            sender: str, message: dict) -> str:
-        """Multi-turn tool-calling loop operating on persistent session messages."""
+            sender: str, message: dict) -> tuple[str, list[int]]:
+        """Multi-turn tool-calling loop operating on persistent session messages.
+
+        Returns (internal_text, posted_ids) — internal_text is model monologue
+        (not posted), posted_ids are messages sent via send_message tool.
+        """
         collected_text = []
+        all_posted_ids: list[int] = []
         self._sandbox_dir = None
 
         set_last_user_cache_control(session.messages)
@@ -399,17 +461,17 @@ class ClaudeResident:
 
                 usage = response.usage
                 input_tokens = getattr(usage, 'input_tokens', 0)
-                session.estimated_message_tokens = input_tokens
-
                 cache_read = getattr(
                     usage, 'cache_read_input_tokens', 0)
                 cache_create = getattr(
                     usage, 'cache_creation_input_tokens', 0)
-                uncached = input_tokens - cache_read
+                # Total context = uncached + cached read + cached write
+                total_input = input_tokens + cache_read + cache_create
+                session.estimated_message_tokens = total_input
                 if turn == 0:
                     self.logger.info(
                         f"Cache: {cache_read} read, {cache_create} created, "
-                        f"{uncached} uncached | "
+                        f"{input_tokens} uncached | "
                         f"session #{session.stream}>{session.topic} "
                         f"msg#{session.message_count} "
                         f"({len(session.messages)} msgs in history)")
@@ -426,6 +488,12 @@ class ClaudeResident:
                     elif block.type == "tool_use":
                         tool_use_blocks.append(block)
 
+                if response.stop_reason == "refusal":
+                    self.logger.warning(
+                        f"API refusal at turn {turn} in "
+                        f"#{stream}>{topic} — safety filter triggered")
+                    break
+
                 if response.stop_reason == "end_turn" or not tool_use_blocks:
                     session.messages.append({
                         "role": "assistant",
@@ -437,6 +505,8 @@ class ClaudeResident:
                 self.logger.info(
                     f"Turn {turn + 1}: {len(tool_use_blocks)} tool call(s): "
                     + ", ".join(b.name for b in tool_use_blocks))
+                # Re-send typing indicator (they expire after ~15s)
+                self._send_typing(stream, topic, "start")
                 session.messages.append({
                     "role": "assistant", "content": response.content})
 
@@ -463,6 +533,7 @@ class ClaudeResident:
                     })
                 # Propagate side effects back
                 self._sandbox_dir = ctx.sandbox_dir
+                all_posted_ids.extend(ctx.posted_ids)
                 if ctx.restart_requested:
                     self._restart_requested = True
 
@@ -476,7 +547,7 @@ class ClaudeResident:
             cleanup_sandbox(self._sandbox_dir)
             self._sandbox_dir = None
 
-        return "\n".join(collected_text)
+        return "\n".join(collected_text), all_posted_ids
 
     # ------------------------------------------------------------------
     # Legacy single-turn response (reflect/ambient/arrive)
@@ -858,6 +929,22 @@ about this moment."""
 # ------------------------------------------------------------------
 # Module-level helpers (extracted from the class for clarity)
 # ------------------------------------------------------------------
+
+def _strip_old_images(messages: list[dict]):
+    """Replace base64 image blocks in existing messages with text placeholders."""
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for i, block in enumerate(content):
+            if isinstance(block, dict) and block.get("type") == "image":
+                content[i] = {
+                    "type": "text",
+                    "text": "[image: previously viewed]",
+                }
+
 
 def _estimate_tokens(obj) -> int:
     """Rough token estimate: ~4 chars per token."""

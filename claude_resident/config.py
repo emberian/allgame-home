@@ -23,7 +23,7 @@ MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
 TYPING_HOLDOFF_TIMEOUT = 30  # max seconds to wait for someone to finish typing
 
 # Metacognitive loop
-METACOG_DEBOUNCE_SECONDS = 7200  # 2 hours — min gap between metacog runs
+METACOG_DEBOUNCE_SECONDS = 86400  # 24 hours — at most once per day
 METACOG_CHECK_INTERVAL = 60  # seconds between background trigger checks
 METACOG_MAX_TOOL_TURNS = 50  # more than conversation (30) — metacog does thorough curation
 

@@ -88,10 +88,26 @@ def has_new_material(state, since_ts: float) -> bool:
     since_iso = datetime.fromtimestamp(since_ts, tz=timezone.utc).isoformat()
     for log_file in channels_dir.rglob("*.jsonl"):
         try:
-            lines = log_file.read_text().strip().split("\n")
-            if not lines or not lines[-1]:
-                continue
-            last_entry = json.loads(lines[-1])
+            # Read only the last line without loading the entire file
+            with open(log_file, "rb") as f:
+                f.seek(0, 2)  # end of file
+                pos = f.tell()
+                if pos == 0:
+                    continue
+                # Scan backwards for the last newline
+                buf = b""
+                while pos > 0:
+                    read_size = min(256, pos)
+                    pos -= read_size
+                    f.seek(pos)
+                    buf = f.read(read_size) + buf
+                    lines = buf.split(b"\n")
+                    if len(lines) > 1:
+                        break
+                last_line = buf.strip().split(b"\n")[-1]
+                if not last_line:
+                    continue
+            last_entry = json.loads(last_line)
             if last_entry.get("ts", "") > since_iso:
                 return True
         except (json.JSONDecodeError, OSError):
@@ -165,7 +181,18 @@ def run_metacog(resident):
     start_time = time.time()
 
     context = build_metacog_context(resident)
-    system = METACOG_SYSTEM_PROMPT + "\n\n" + context
+    system = [
+        {
+            "type": "text",
+            "text": METACOG_SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": context,
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
 
     user_prompt = (
         "Run your metacognitive cycle now. Review the recent messages and "
@@ -234,6 +261,15 @@ def run_metacog(resident):
                     **({"is_error": True} if result.get("is_error") else {}),
                 })
 
+            # Move cache breakpoint to the latest tool results (max 4 total,
+            # 2 used by system blocks, so only 1 on messages at a time).
+            for msg in messages:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                    for block in msg["content"]:
+                        if isinstance(block, dict):
+                            block.pop("cache_control", None)
+            if tool_results:
+                tool_results[-1]["cache_control"] = {"type": "ephemeral"}
             messages.append({"role": "user", "content": tool_results})
         else:
             logger.warning(
@@ -254,12 +290,27 @@ def run_metacog(resident):
         logger.error(f"Metacog error: {e}", exc_info=True)
 
 
+def _read_last_metacog_ts(state) -> float:
+    """Read persisted last-metacog timestamp from state dir."""
+    ts_file = state.root / ".last_metacog"
+    try:
+        return float(ts_file.read_text().strip())
+    except (OSError, ValueError):
+        return time.time()  # no record = treat now as last run
+
+
+def _write_last_metacog_ts(state, ts: float):
+    """Persist last-metacog timestamp to state dir."""
+    ts_file = state.root / ".last_metacog"
+    ts_file.write_text(str(ts))
+
+
 class MetacogRunner:
     """Background daemon that triggers metacog runs post-session."""
 
     def __init__(self, resident):
         self._resident = resident
-        self._last_metacog: float = 0.0
+        self._last_metacog: float = _read_last_metacog_ts(resident.state)
         self._first_activity_since_metacog: float = 0.0
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -298,6 +349,8 @@ class MetacogRunner:
                         self._resident.state, self._last_metacog):
                     logger.debug("Metacog trigger: no new material in logs")
                     self._last_metacog = time.time()
+                    _write_last_metacog_ts(
+                        self._resident.state, self._last_metacog)
                     continue
 
                 if not self._lock.acquire(blocking=False):
@@ -308,6 +361,8 @@ class MetacogRunner:
                     logger.info("Metacog triggered")
                     run_metacog(self._resident)
                     self._last_metacog = time.time()
+                    _write_last_metacog_ts(
+                        self._resident.state, self._last_metacog)
                 finally:
                     self._lock.release()
 

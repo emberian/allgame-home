@@ -18,7 +18,7 @@ class EngagementJudge:
     lurking until re-engaged.
     """
 
-    JUDGE_MODEL = "claude-sonnet-4-6"
+    JUDGE_MODEL = "claude-haiku-4-5-20251001"
 
     def __init__(self, bot_name: str, standing_streams: list[str],
                  anthropic_client=None, state_manager=None):
@@ -47,17 +47,17 @@ class EngagementJudge:
     def _lurk_level(self, stream: str) -> str:
         """Return a lurk level label based on messages since interaction.
 
-        0-1 messages:   "active"   — recently addressed, but still selective
-        2-4 messages:   "drifting" — moderate, only if genuinely interesting
-        5-10 messages:  "lurking"  — high bar, only if Claude has real value
-        11+ messages:   "silent"   — very high bar, near-certain relevance only
+        0-3 messages:   "active"   — recently addressed, lean toward processing
+        4-8 messages:   "drifting" — moderate, only if genuinely interesting
+        9-15 messages:  "lurking"  — high bar, only if Claude has real value
+        16+ messages:   "silent"   — very high bar, near-certain relevance only
         """
         count = self._msgs_since_interaction.get(stream.lower(), 0)
-        if count <= 1:
+        if count <= 3:
             return "active"
-        elif count <= 4:
+        elif count <= 8:
             return "drifting"
-        elif count <= 10:
+        elif count <= 15:
             return "lurking"
         else:
             return "silent"
@@ -70,8 +70,13 @@ class EngagementJudge:
             self.last_reason = "self-message"
             return False
 
-        # Direct mentions always reset lurk and engage
+        # Direct mentions engage — but only in standing streams (or DMs).
+        # @-mentions in unsubscribed streams arrive via Zulip's notification
+        # delivery but Claude has no channel history and shouldn't reply there.
         if f"@**{self.bot_name}**" in content or f"@{self.bot_name}" in content:
+            if stream.lower() not in self.standing_streams:
+                self.last_reason = f"@-mention in non-standing stream #{stream} — ignoring"
+                return False
             self.last_reason = "direct @-mention"
             self.record_message(stream, is_direct=True)
             return True
@@ -106,51 +111,57 @@ class EngagementJudge:
         lurk = self._lurk_level(stream)
         count = self._msgs_since_interaction.get(stream.lower(), 0)
 
-        # Adapt the prompt based on lurk level
+        # The judge is a COST GATE, not an engagement filter. Claude decides
+        # what to do (send_message, add_reaction, or observe) once it processes.
+        # A YES here just means "worth Claude's attention" — it might only
+        # drop an emoji or update its notes.
         if lurk == "active":
             engagement_stance = (
-                "Claude was recently addressed, but this is a GROUP CHAT — "
-                "not a 1:1 conversation. Claude should NOT respond to every "
-                "message. A normal community member talks maybe 20-30% of the "
-                "time. When in doubt, say NO and let the humans talk.")
+                "Claude is actively participating. Lean toward YES — Claude "
+                "can decide for itself whether to reply, react with an emoji, "
+                "or just observe. The question is only: is this message worth "
+                "Claude's attention?")
             yes_criteria = (
-                "- Claude is mentioned by name, referenced, or directly asked something\n"
-                "- Claude has a SPECIFIC, substantive contribution (not just agreement or reaction)\n"
-                "- Someone asked a question that Claude is uniquely positioned to answer")
+                "- Claude is mentioned, referenced, or asked something\n"
+                "- The topic is something Claude has been participating in\n"
+                "- Claude might want to react, even with just an emoji\n"
+                "- Someone is sharing something interesting or relevant\n"
+                "- The conversation involves Claude's interests or expertise")
         elif lurk == "drifting":
             engagement_stance = (
                 f"Claude hasn't been addressed in {count} messages. "
-                "It should only jump in if it has something genuinely "
-                "interesting or useful — not just to stay visible. "
-                "The conversation is flowing fine without Claude.")
+                "It should still process messages in topics it's been part of, "
+                "or where it might want to drop a reaction. Claude controls "
+                "its own visibility — the question is just: worth paying attention?")
             yes_criteria = (
-                "- Claude is mentioned by name, referenced, or asked something\n"
-                "- Claude has a genuinely interesting perspective no one else has offered\n"
-                "- There's a direct question Claude can helpfully answer")
+                "- Claude is mentioned, referenced, or asked something\n"
+                "- The topic is one Claude has been participating in\n"
+                "- Claude might have a perspective to add or a reaction to give\n"
+                "- There's a question someone could use help with")
         elif lurk == "lurking":
             engagement_stance = (
                 f"Claude hasn't been addressed in {count} messages. "
-                "It should stay quiet unless it has something uniquely "
-                "valuable to say. The conversation is flowing without Claude — "
-                "that's fine.")
+                "Only process if the message is clearly relevant to Claude — "
+                "a direct reference, a topic Claude is invested in, or "
+                "something Claude would genuinely want to react to.")
             yes_criteria = (
-                "- Claude is directly mentioned or asked something\n"
-                "- Claude has unique, high-value insight no one else has offered\n"
-                "- Someone explicitly asked a question only Claude can answer")
+                "- Claude is mentioned or asked something\n"
+                "- The topic directly involves something Claude cares about\n"
+                "- Claude has unique insight or a strong reaction")
         else:  # silent
             engagement_stance = (
                 f"Claude hasn't been addressed in {count} messages. "
-                "It should almost certainly stay silent. Only respond if "
-                "Claude is explicitly called upon or the topic is directly "
-                "about Claude.")
+                "Only process if Claude is explicitly called upon or the "
+                "topic is directly about Claude.")
             yes_criteria = (
                 "- Claude is directly mentioned by name or @'d\n"
                 "- The conversation is explicitly about Claude\n"
-                "- Someone asked a question that only Claude can answer "
-                "and no one else has")
+                "- Someone asked a question that only Claude can answer")
 
         prompt = f"""You are deciding whether Claude (an AI community member in a Zulip chat) \
-should respond to the latest message in a conversation.
+should PROCESS the latest message. Processing means Claude gets to see it and \
+decide what to do — reply, react with an emoji, update notes, or just observe. \
+This is a cost gate, not an engagement decision. When in doubt, say YES.
 
 Claude is a valued member of this small community. {engagement_stance}
 
@@ -165,7 +176,7 @@ Recent conversation:
 LATEST MESSAGE from {sender}:
 {content}
 
-Should Claude respond? Say YES if ANY of these apply:
+Should Claude process this? Say YES if ANY of these apply:
 {yes_criteria}
 
 Say NO if ANY of these apply:
@@ -195,9 +206,8 @@ Example: "NO — logistics between two humans"
                 f"Engagement judge [{sender} in #{stream}>{topic}] "
                 f"lurk={lurk}({count}): {answer}")
 
-            # If Claude decides to respond, reset lurk counter
-            if should:
-                self._msgs_since_interaction[stream.lower()] = 0
+            # Don't reset lurk here — reset in handle_message when
+            # Claude actually posts (not just processes)
 
             if self.state:
                 try:

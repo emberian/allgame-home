@@ -18,6 +18,43 @@ def run_background_tool(inp: dict, state_root) -> dict:
     return run_background(command, files, state_root, timeout)
 
 
+def query_background_tool(inp: dict, state_root) -> dict:
+    """Query the background container: ps, read_file, ls, tail_log."""
+    action = inp.get("action", "ps")
+    path = inp.get("path", "/workspace")
+    lines = min(inp.get("lines", 50), 500)
+
+    if not ensure_bg_container(state_root):
+        return {"content": "Background container not running.", "is_error": True}
+
+    cmd_map = {
+        "ps": "ps aux --sort=-%mem",
+        "read_file": f"cat '{path}'",
+        "ls": f"ls -lah '{path}'",
+        "tail_log": f"tail -n {lines} '{path}'",
+    }
+    cmd = cmd_map.get(action)
+    if not cmd:
+        return {"content": f"Unknown action: {action}", "is_error": True}
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", BG_CONTAINER_NAME, "bash", "-c", cmd],
+            capture_output=True, text=True, timeout=15)
+        output = result.stdout or ""
+        if result.stderr:
+            output += ("\n--- stderr ---\n" + result.stderr) if output else result.stderr
+        if not output:
+            output = "(no output)"
+        if len(output) > 30_000:
+            output = output[:30_000] + "\n\n[truncated at 30k chars]"
+        return {"content": output}
+    except subprocess.TimeoutExpired:
+        return {"content": "Query timed out (15s)", "is_error": True}
+    except Exception as e:
+        return {"content": f"Query error: {e}", "is_error": True}
+
+
 def run_mirror_council_tool(inp: dict, state) -> dict:
     """Tool handler: run the mirror council on a draft."""
     draft = inp.get("draft", "")

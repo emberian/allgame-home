@@ -274,8 +274,10 @@ TOOL_DEFINITIONS = [
         "description": (
             "Run a command in your persistent background container. "
             "Unlike run_sandbox (ephemeral), this container persists. "
-            "Has network access, Anthropic SDK, 512MB memory, 1 CPU core. "
-            "Use timeout=0 for fire-and-forget."
+            "Has network access, Anthropic SDK, 8GB memory, 4 CPU cores, "
+            "and read-only access to your state dir at /state. "
+            "Use timeout=0 for fire-and-forget. "
+            "Use query_background to check on jobs later."
         ),
         "input_schema": {
             "type": "object",
@@ -295,6 +297,38 @@ TOOL_DEFINITIONS = [
                 }
             },
             "required": ["command"]
+        }
+    },
+    {
+        "name": "query_background",
+        "description": (
+            "Query your persistent background container without running a "
+            "new command. Check on running processes, read files from "
+            "/workspace or /state, tail log output, etc. Lightweight and fast."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["ps", "read_file", "ls", "tail_log"],
+                    "description": (
+                        "ps: list running processes. "
+                        "read_file: read a file from the container. "
+                        "ls: list files in a directory. "
+                        "tail_log: tail a log/output file."
+                    )
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File or directory path (for read_file, ls, tail_log). Defaults to /workspace."
+                },
+                "lines": {
+                    "type": "integer",
+                    "description": "Number of lines for tail_log (default 50)."
+                }
+            },
+            "required": ["action"]
         }
     },
     {
@@ -332,6 +366,39 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "send_message",
+        "description": (
+            "Post a message to Zulip. This is the ONLY way to speak publicly. "
+            "Your text output is internal monologue — only send_message posts. "
+            "Defaults to the current stream/topic. Use stream/topic overrides "
+            "to post elsewhere."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The message content (Zulip markdown)."
+                },
+                "stream": {
+                    "type": "string",
+                    "description": (
+                        "Optional: post to a different stream. "
+                        "Omit to use the current stream."
+                    )
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Optional: post to a different topic. "
+                        "Omit to use the current topic."
+                    )
+                }
+            },
+            "required": ["content"]
+        }
+    },
+    {
         "name": "add_reaction",
         "description": (
             "Add an emoji reaction to a Zulip message. If message_id is omitted, "
@@ -357,6 +424,73 @@ TOOL_DEFINITIONS = [
                 }
             },
             "required": ["emoji_name"]
+        }
+    },
+    {
+        "name": "read_tweet",
+        "description": (
+            "Look up a tweet/post on X by URL or ID. Returns the full text, "
+            "author info, metrics, and any quoted/replied-to context. "
+            "Accepts x.com or twitter.com URLs, or a bare tweet ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tweet": {
+                    "type": "string",
+                    "description": (
+                        "Tweet URL or ID. Examples: "
+                        "'https://x.com/user/status/123456', '123456'"
+                    )
+                }
+            },
+            "required": ["tweet"]
+        }
+    },
+    {
+        "name": "search_tweets",
+        "description": (
+            "Search recent tweets on X (last 7 days). Uses the X API v2 "
+            "recent search endpoint. Supports standard X search operators "
+            "(from:user, -is:retweet, has:links, etc)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Search query. Supports X search operators. "
+                        "Examples: 'from:elonmusk AI', 'Claude Anthropic -is:retweet'"
+                    )
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results (default 10, max 100)."
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "get_user_tweets",
+        "description": (
+            "Get a user's recent tweets on X. Returns their profile info "
+            "and latest posts with metrics."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "X username (with or without @). Example: 'AnthropicAI'"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum tweets to return (default 10, max 100)."
+                }
+            },
+            "required": ["username"]
         }
     },
     {

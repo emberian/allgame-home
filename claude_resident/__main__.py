@@ -50,6 +50,9 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         format=LOG_FORMAT,
     )
+    # Silence noisy third-party loggers
+    for name in ("httpx", "httpcore", "urllib3", "anthropic", "anthropic._base_client"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     # One-shot modes: run directly, no supervisor needed
     if (args._supervised or args.arrive or args.reflect
@@ -64,8 +67,56 @@ def main():
     run_supervised(child_cmd, args.state_dir)
 
 
+def _setup_debug_log():
+    """Set up a debug tap that logs all Anthropic API exchanges."""
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    deblog = Path.home() / "dev" / "allgame" / "deblog.txt"
+
+    def _log_response(response):
+        try:
+            req = response.request
+            ts = datetime.now(timezone.utc).isoformat()[:19]
+            with open(deblog, "a") as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"[{ts}] {req.method} {req.url}\n")
+                # Log request body (truncate large fields)
+                try:
+                    body = json.loads(req.content)
+                    # Truncate system/messages for readability
+                    if "system" in body:
+                        if isinstance(body["system"], list):
+                            for i, b in enumerate(body["system"]):
+                                if isinstance(b, dict) and len(b.get("text", "")) > 200:
+                                    body["system"][i] = {**b, "text": b["text"][:200] + f"... [{len(b['text'])} chars]"}
+                        elif isinstance(body["system"], str) and len(body["system"]) > 200:
+                            body["system"] = body["system"][:200] + f"... [{len(body['system'])} chars]"
+                    if "messages" in body:
+                        body["_message_count"] = len(body["messages"])
+                        # Show last message only
+                        if body["messages"]:
+                            last = body["messages"][-1]
+                            body["messages"] = [f"... {len(body['messages'])-1} earlier messages ...", last]
+                    f.write(f"REQUEST: {json.dumps(body, indent=2, default=str)[:3000]}\n")
+                except Exception:
+                    f.write(f"REQUEST: {str(req.content)[:500]}\n")
+                # Log response
+                try:
+                    resp_body = response.json()
+                    f.write(f"RESPONSE ({response.status_code}): {json.dumps(resp_body, indent=2, default=str)[:3000]}\n")
+                except Exception:
+                    f.write(f"RESPONSE ({response.status_code}): {response.text[:500]}\n")
+        except Exception as e:
+            pass  # never crash the bot for logging
+
+    return _log_response
+
+
 def _run_directly(args):
     """Run the event loop directly (as supervised child or one-shot)."""
+    import httpx
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -73,7 +124,12 @@ def _run_directly(args):
     if args.zuliprc:
         zulip_kwargs["config_file"] = args.zuliprc
     zulip_client = zulip.Client(**zulip_kwargs)
-    anthropic_client = anthropic.Anthropic()
+
+    # Set up debug log tap
+    debug_hook = _setup_debug_log()
+    http_client = httpx.Client(
+        event_hooks={"response": [debug_hook]})
+    anthropic_client = anthropic.Anthropic(http_client=http_client)
     state = StateManager(args.state_dir)
 
     bot_profile = zulip_client.get_profile()

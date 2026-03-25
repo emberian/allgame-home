@@ -7,6 +7,7 @@ from claude_resident.tools import (
     search_tools,
     sandbox_tools,
     web_tools,
+    x_tools,
     comms_tools,
     background_tools,
     harness_tools,
@@ -40,6 +41,7 @@ class ToolContext:
         self.sender = sender
         self.message = message
         self.restart_requested = False
+        self.posted_ids: list[int] = []
 
 
 def _h_read_state_file(inp, ctx):
@@ -91,6 +93,9 @@ def _h_web_search(inp, ctx):
 def _h_run_background(inp, ctx):
     return background_tools.run_background_tool(inp, ctx.state.root)
 
+def _h_query_background(inp, ctx):
+    return background_tools.query_background_tool(inp, ctx.state.root)
+
 def _h_edit_harness(inp, ctx):
     result = harness_tools.edit_harness_tool(inp, ctx.state)
     if not result.get("is_error"):
@@ -99,6 +104,50 @@ def _h_edit_harness(inp, ctx):
 
 def _h_run_mirror_council(inp, ctx):
     return background_tools.run_mirror_council_tool(inp, ctx.state)
+
+def _h_read_tweet(inp, ctx):
+    return x_tools.read_tweet(inp)
+
+def _h_search_tweets(inp, ctx):
+    return x_tools.search_tweets(inp)
+
+def _h_get_user_tweets(inp, ctx):
+    return x_tools.get_user_tweets(inp)
+
+
+def _h_send_message(inp, ctx):
+    """Post a message to Zulip."""
+    from datetime import datetime, timezone
+    content = inp.get("content", "").strip()
+    if not content:
+        return {"content": "Empty message — nothing to send.", "is_error": True}
+    stream = inp.get("stream", ctx.stream)
+    topic = inp.get("topic", ctx.topic)
+    msg_type = ctx.message.get("type", "stream")
+    if msg_type == "stream" or inp.get("stream"):
+        result = ctx.zulip.send_message({
+            "type": "stream",
+            "to": stream,
+            "topic": topic,
+            "content": content,
+        })
+    else:
+        result = ctx.zulip.send_message({
+            "type": "private",
+            "to": [ctx.message.get("sender_email", "")],
+            "content": content,
+        })
+    if result.get("result") != "success":
+        return {"content": f"Failed to send: {result}", "is_error": True}
+    posted_id = result.get("id")
+    # Log and index the posted message
+    timestamp = datetime.now(timezone.utc).isoformat()
+    ctx.state.log_message(stream, topic, "Claude", content, timestamp,
+                          msg_id=posted_id)
+    if posted_id:
+        ctx.posted_ids.append(posted_id)
+    target = f"#{stream}>{topic}" if msg_type == "stream" or inp.get("stream") else "DM"
+    return {"content": f"Message sent to {target} (id: {posted_id})"}
 
 
 def _h_add_reaction(inp, ctx):
@@ -134,7 +183,12 @@ _HANDLERS = {
     "fetch_url": _h_fetch_url,
     "web_search": _h_web_search,
     "run_background": _h_run_background,
+    "query_background": _h_query_background,
     "edit_harness": _h_edit_harness,
     "run_mirror_council": _h_run_mirror_council,
+    "send_message": _h_send_message,
     "add_reaction": _h_add_reaction,
+    "read_tweet": _h_read_tweet,
+    "search_tweets": _h_search_tweets,
+    "get_user_tweets": _h_get_user_tweets,
 }

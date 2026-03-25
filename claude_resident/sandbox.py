@@ -38,6 +38,7 @@ def ensure_bg_container(state_root: Path) -> bool:
         "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
         "-e", f"KAGI_API_KEY={os.environ.get('KAGI_API_KEY', '')}",
         "-v", f"{bg_workspace}:/workspace",
+        "-v", f"{state_root}:/state:ro",
         "-w", "/workspace",
         SANDBOX_IMAGE,
         "sleep", "infinity",
