@@ -19,6 +19,7 @@ class ConversationSession:
     last_active: float = field(default_factory=time.time)
     message_count: int = 0
     estimated_message_tokens: int = 0
+    send_word_counts: list = field(default_factory=list)  # word counts of send_message calls
 
     def touch(self):
         self.last_active = time.time()

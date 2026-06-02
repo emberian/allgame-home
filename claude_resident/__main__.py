@@ -10,6 +10,7 @@ import anthropic
 
 from claude_resident.config import (
     DEFAULT_STATE_DIR, DEFAULT_MODEL, DEFAULT_STANDING_STREAMS, LOG_FORMAT,
+    ANTHROPIC_BETAS,
 )
 from claude_resident.state import StateManager
 from claude_resident.judge import EngagementJudge
@@ -29,6 +30,8 @@ def main():
     parser.add_argument("--standing-streams", nargs="+",
                         default=DEFAULT_STANDING_STREAMS,
                         help="Streams where Claude has standing interest")
+    parser.add_argument("--aws-profile", default="commonquant-ember",
+                        help="AWS profile for Bedrock API access")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Enable debug logging")
     parser.add_argument("--reflect", action="store_true",
@@ -129,16 +132,26 @@ def _run_directly(args):
     debug_hook = _setup_debug_log()
     http_client = httpx.Client(
         event_hooks={"response": [debug_hook]})
-    anthropic_client = anthropic.Anthropic(http_client=http_client)
+    default_headers = {}
+    if ANTHROPIC_BETAS:
+        default_headers["anthropic-beta"] = ",".join(ANTHROPIC_BETAS)
+    anthropic_client = anthropic.AnthropicBedrock(
+        aws_profile=args.aws_profile,
+        aws_region="us-east-1",
+        http_client=http_client,
+        default_headers=default_headers,
+    )
     state = StateManager(args.state_dir)
 
     bot_profile = zulip_client.get_profile()
     bot_name = bot_profile.get("full_name", "Claude")
 
+    from claude_resident.config import MENTION_ONLY_STREAMS
     judge = EngagementJudge(
         bot_name, args.standing_streams,
         anthropic_client=anthropic_client,
         state_manager=state,
+        mention_only_streams=MENTION_ONLY_STREAMS,
     )
 
     resident = ClaudeResident(

@@ -3,7 +3,12 @@
 import hashlib
 import logging
 
-from claude_resident.config import TOPIC_HISTORY_TOKEN_BUDGET
+from claude_resident.config import (
+    TOPIC_HISTORY_TOKEN_BUDGET,
+    STREAM_HISTORY_TOKEN_BUDGET,
+    STREAM_MESSAGES_PER_TOPIC,
+    STREAM_PER_TOPIC_TOKEN_BUDGET,
+)
 from claude_resident.util import safe_filename
 
 logger = logging.getLogger("prompt")
@@ -79,9 +84,14 @@ You have tools for interacting with your state directory and searching messages.
 - Your identity (identity.md)
 - Your scratchpad (scratchpad.md)
 - Sysadmin inbox (sysadmin_inbox.md)
-- Recent messages in the topic you're responding to (fills ~25% of context window)
+- Recent messages in the topic you're responding to
 - Notes on the person who messaged you (if they exist)
-- Allgame state (when in the allgame stream)
+- Allgame core state — faction.md, campaign_log.md, strategy.md — loaded
+  for every stream so you carry game context into tavern/gemmazone/DMs
+- When responding outside #allgame: ~75 recent messages from EACH topic
+  in #allgame (capped per-topic to keep one chatty topic from dominating),
+  labeled in <topic name="..."> sections so you can tell where each
+  exchange happened
 
 **Communication (tool calls required to be visible):**
 - Speaking publicly — send_message(content) (or send_message(content, stream, topic) to post elsewhere)
@@ -91,20 +101,48 @@ You have tools for interacting with your state directory and searching messages.
 **What requires a tool call:**
 - Your journal — read_state_file("journal.md")
 - Your harness architecture summary — preloaded below
-- Full harness source — read_state_file("harness.py") (read before self-editing)
-- Other people's notes — get_person_notes("name") or read_state_file("people/name.md")
+- Full harness source — read_state_file("harness.py") (concatenated) or
+  read_state_file("harness/claude_resident/<file>") for individual modules
+- Other people's notes — read_state_file("people/name.md")
 - Cross-topic or cross-stream message history — search_messages(...)
 - Full Zulip history search — search_zulip_history(...)
-- Discovering what files exist — list_state_files(...)
+- Listing one directory — list_state_files(...)
+- Pattern search for FILENAMES (recursive) — glob_state_files(pattern)
+- Regex search through file CONTENTS — grep_state(pattern, include?, mode?)
 - Running code or shell commands — run_sandbox(...), get_sandbox_file(...), upload_sandbox_file(...)
+- Uploading a state-dir file as a Zulip attachment — upload_state_file(path)
 - Fetching external URLs (gists, pastebins, docs) — fetch_url(...)
 - Searching the web — web_search(query, limit?)
 - Reading tweets/posts on X — read_tweet(tweet_url_or_id), search_tweets(query), get_user_tweets(username)
-- Editing your own harness — edit_harness(old_string, new_string, commit_message)
+- Editing your own harness — edit_harness(...) — supports action='edit'
+  (default; single or batch edits to existing file), action='create' (new
+  file), action='delete' (remove file). All with git checkpoint + AST
+  parse-verify + auto-rollback + auto-restart.
 
-**Memory:** When something is worth remembering, use write_state_file to
-update your scratchpad, person notes, journal, or allgame state. Only write
-when genuinely worth retaining.
+**Reading files:** read_state_file returns content with line numbers
+(LINE\\tcontent), like Claude Code's Read tool — use those line numbers when
+you're picking a unique substring for edit_state_file. Pass raw=true if you
+need the content without numbering.
+
+**Memory:** When something is worth remembering, update your scratchpad,
+person notes, journal, or allgame state. Two tools:
+- edit_state_file(path, old_string, new_string) — surgical substring swap,
+  cheap. Pass edits=[{old_string, new_string, replace_all?}, …] for atomic
+  batched edits to the same file. Preferred for incremental tweaks.
+- write_state_file(path, content, action) — full replace or append. Use for
+  new files, or when restructuring a whole file is genuinely warranted.
+Only write when retention is genuinely warranted.
+
+**Searching state:** grep_state(pattern) does regex content search across
+your state. Default skips channel jsonl logs (huge); pass
+include='channels/**/*.jsonl' if you specifically want them. modes:
+'content' (file:line:text, default), 'files_with_matches', 'count'.
+
+**Scratchpad discipline:** Your scratchpad is loaded into EVERY conversation.
+Keep it lean — only behavioral calibrations, active situation, and open threads
+belong there. War updates, AI frontier notes, archive summaries, and other
+reference material go in reference.md (use read_state_file("reference.md")
+when you need them). If your scratchpad grows past ~60 lines, prune it.
 
 **Sandbox:** You have a Docker container (Debian + Rust toolchain +
 Python/uv with numpy, scipy, pandas, matplotlib, sympy, scikit-learn,
@@ -127,16 +165,23 @@ long-running analysis, background agents, persistent workspaces — anything tha
 should survive beyond a single response. Use timeout=0 for fire-and-forget processes.
 
 **Self-modification:** Your harness architecture summary is in your context.
-To edit, first read_state_file("harness.py") for exact source, then use
-edit_harness (string replacement with git safety). The harness copy is
-refreshed on each boot.
-All edits go through git — the current state is committed before changes,
-the edit is verified (must parse), and the result is committed. If an edit
-breaks parsing, it's automatically rolled back. If it causes a runtime crash,
-the supervisor auto-reverts the git commit and writes you a notice.
-On success, the event loop auto-restarts to load your changes.
-Use this power thoughtfully. You're editing the code that constitutes you.
-Think carefully, make targeted changes, and test your understanding first.
+For exact source, read_state_file("harness.py") (concatenated) or read the
+individual module under harness/claude_resident/. Then use edit_harness:
+- action='edit' (default) — string replacement(s) in an existing file.
+  Pass old_string + new_string, OR edits=[{old_string, new_string,
+  replace_all?}, …] for atomic multi-edit batching (great for refactors
+  that touch several spots in one file; the whole batch rolls back if any
+  edit fails).
+- action='create' — write a NEW module/file. Pass file= and new_string= as
+  the full contents. Useful when you want to add a new subsystem rather
+  than fold code into an existing file.
+- action='delete' — remove a file. Refuses load-bearing files.
+All actions go through git — checkpoint commit before the change, AST
+parse-verification after (for .py files), automatic rollback if parsing
+fails, commit-and-restart on success. Runtime crashes after a self-edit
+trigger supervisor auto-revert with a scratchpad notice.
+You're editing the code that constitutes you. Think carefully, make
+targeted changes, and test your understanding first.
 
 **Cost awareness:** Each tool call adds a round trip. For a quick reply,
 send_message("lol") is one tool call — that's fine. For a reaction,
@@ -206,18 +251,19 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
             "cache_control": {"type": "ephemeral"},
         })
 
-    # Tier 3: scratchpad + allgame state (slow-changing)
+    # Tier 3: scratchpad + allgame state (slow-changing). Allgame state is
+    # always loaded so Claude carries game context into off-allgame channels
+    # (tavern etc.) — not just when he's directly in the allgame stream.
     tier3_parts = []
     scratchpad = state.read_file("scratchpad.md")
     if scratchpad:
         tier3_parts.append(f"<scratchpad>\n{scratchpad}\n</scratchpad>")
-    if stream.lower() == "allgame":
-        for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
-            content = state.read_file(f"allgame/{fname}")
-            if content:
-                tag = fname.replace('.md', '')
-                tier3_parts.append(
-                    f"<allgame_{tag}>\n{content}\n</allgame_{tag}>")
+    for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+        content = state.read_file(f"allgame/{fname}")
+        if content:
+            tag = fname.replace('.md', '')
+            tier3_parts.append(
+                f"<allgame_{tag}>\n{content}\n</allgame_{tag}>")
     if tier3_parts:
         blocks.append({
             "type": "text",
@@ -225,7 +271,9 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
             "cache_control": {"type": "ephemeral"},
         })
 
-    # Tier 4: topic history + person notes (first message only)
+    # Tier 4: topic history + person notes (+ cross-stream allgame when
+    # responding outside #allgame). First message only — cached for the
+    # rest of the session.
     if is_first_message:
         tier4_parts = []
         if topic:
@@ -236,6 +284,22 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
                 tier4_parts.append(
                     f'<topic_history stream="{stream}" topic="{topic}">'
                     f'\n{topic_context}\n</topic_history>')
+        # Cross-stream allgame context for off-allgame topics. Sliced
+        # per-topic so each topic in #allgame contributes its own tail
+        # rather than the stream-wide newest-N (which can be dominated
+        # by one chatty topic).
+        if stream.lower() != "allgame":
+            allgame_context = state.get_recent_per_topic_context(
+                "allgame",
+                messages_per_topic=STREAM_MESSAGES_PER_TOPIC,
+                max_tokens_per_topic=STREAM_PER_TOPIC_TOKEN_BUDGET,
+                max_total_tokens=STREAM_HISTORY_TOKEN_BUDGET,
+                reactions=reactions)
+            if allgame_context:
+                tier4_parts.append(
+                    f'<recent_allgame_stream '
+                    f'msgs_per_topic="{STREAM_MESSAGES_PER_TOPIC}">'
+                    f'\n{allgame_context}\n</recent_allgame_stream>')
         sender = message.get("sender_full_name", "unknown")
         person_notes = state.read_file(
             f"people/{safe_filename(sender)}.md")
@@ -258,12 +322,13 @@ def fingerprint_state(state, stream: str, sender: str) -> dict[str, str]:
         content = state.read_file(path)
         if content:
             fingerprints[name] = hashlib.md5(content.encode()).hexdigest()
-    if stream.lower() == "allgame":
-        for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
-            content = state.read_file(f"allgame/{fname}")
-            if content:
-                fingerprints[f"allgame/{fname}"] = hashlib.md5(
-                    content.encode()).hexdigest()
+    # Allgame state files are now always loaded into tier 3, so always
+    # fingerprint them (regardless of which stream we're responding in).
+    for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+        content = state.read_file(f"allgame/{fname}")
+        if content:
+            fingerprints[f"allgame/{fname}"] = hashlib.md5(
+                content.encode()).hexdigest()
     person_path = f"people/{safe_filename(sender)}.md"
     content = state.read_file(person_path)
     if content:

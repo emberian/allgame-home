@@ -25,6 +25,10 @@ def build_content_blocks(text: str, zulip_client=None) -> list[dict]:
     url_pattern = (
         r'(?:!\[.*?\]\()?(https?://[^\s\)]+\.'
         r'(?:png|jpg|jpeg|gif|webp))(?:\))?')
+    # PDF attachments (Zulip uploads and external URLs)
+    pdf_pattern = (
+        r'(?:\[.*?\]\()?'
+        r'((?:/user_uploads/|https?://)[^\s\)]+\.pdf)(?:\))?')
 
     clean_text = text
     for pattern in [upload_pattern, url_pattern]:
@@ -34,6 +38,13 @@ def build_content_blocks(text: str, zulip_client=None) -> list[dict]:
             if image_block:
                 blocks.append(image_block)
                 clean_text = clean_text.replace(match.group(0), "", 1)
+
+    for match in re.finditer(pdf_pattern, text, re.IGNORECASE):
+        url = match.group(1)
+        doc_block = fetch_document_as_block(url, zulip_client)
+        if doc_block:
+            blocks.append(doc_block)
+            clean_text = clean_text.replace(match.group(0), "", 1)
 
     clean_text = clean_text.strip()
     if clean_text:
@@ -91,4 +102,46 @@ def fetch_image_as_block(url: str,
 
     except Exception as e:
         logger.warning(f"Error fetching image {url}: {e}")
+        return None
+
+
+def fetch_document_as_block(url: str,
+                            zulip_client=None) -> Optional[dict]:
+    """Fetch a PDF and return it as an Anthropic API document content block."""
+    try:
+        if url.startswith("/user_uploads"):
+            if zulip_client is None:
+                return None
+            full_url = urljoin(zulip_client.base_url, url)
+            response = zulip_client.session.get(full_url, timeout=30)
+        else:
+            import requests as _requests
+            response = _requests.get(url, timeout=30)
+
+        if response.status_code != 200:
+            logger.warning(
+                f"Failed to fetch PDF {url}: HTTP {response.status_code}")
+            return None
+
+        encoded = base64.b64encode(response.content).decode("utf-8")
+
+        # Anthropic accepts PDFs up to 32MB; cap base64 payload accordingly.
+        if len(encoded) > 32_000_000:
+            logger.warning(f"PDF too large, skipping: {url}")
+            return None
+
+        logger.info(
+            f"Fetched PDF: {url} ({len(response.content)} bytes)")
+
+        return {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": encoded,
+            }
+        }
+
+    except Exception as e:
+        logger.warning(f"Error fetching PDF {url}: {e}")
         return None

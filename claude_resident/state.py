@@ -217,6 +217,83 @@ class StateManager:
             formatted.append(text)
         return "\n".join(formatted)
 
+    def get_recent_per_topic_context(self, stream: str,
+                                     messages_per_topic: int = 75,
+                                     max_tokens_per_topic: int = 0,
+                                     max_total_tokens: int = 0,
+                                     reactions: dict[int, dict[str, int]] | None = None
+                                     ) -> str:
+        """Return the last N messages from each topic in a stream, grouped
+        and labeled per-topic, sorted by topic recency (most recent first).
+
+        Each topic's slice is also bounded by max_tokens_per_topic so a
+        single chunky topic can't eat the whole budget. Topics that would
+        push past max_total_tokens get dropped (oldest-first)."""
+        safe_stream = safe_filename(stream)
+        stream_dir = self.root / f"channels/{safe_stream}"
+        if not stream_dir.exists():
+            return ""
+
+        topic_data = []
+        for log_file in stream_dir.glob("*.jsonl"):
+            topic = log_file.stem
+            try:
+                lines = [l for l in log_file.read_text().strip().split("\n") if l]
+            except OSError:
+                continue
+            if not lines:
+                continue
+            recent = lines[-messages_per_topic:]
+            msgs = []
+            for line in recent:
+                try:
+                    msgs.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+            if not msgs:
+                continue
+
+            # Format newest backward, respecting per-topic budget
+            formatted_rev = []
+            topic_tokens = 0
+            for m in reversed(msgs):
+                content = self._strip_zulip_quotes(m.get('content', ''))
+                line = f"[{m['ts']}] {m['sender']}: {content}"
+                msg_id = m.get("msg_id")
+                if reactions and msg_id and msg_id in reactions:
+                    rxns = reactions[msg_id]
+                    if rxns:
+                        rxn_str = ", ".join(
+                            f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
+                        if rxn_str:
+                            line += f" [{rxn_str}]"
+                t = len(line) // 4 + 1
+                if max_tokens_per_topic > 0 and topic_tokens + t > max_tokens_per_topic:
+                    break
+                formatted_rev.append(line)
+                topic_tokens += t
+
+            if not formatted_rev:
+                continue
+            formatted = list(reversed(formatted_rev))
+            last_ts = msgs[-1].get('ts', '')
+            topic_data.append((last_ts, topic, formatted, topic_tokens))
+
+        topic_data.sort(key=lambda t: t[0], reverse=True)
+
+        output_parts = []
+        total = 0
+        for _, topic, formatted, t_tokens in topic_data:
+            if max_total_tokens > 0 and total + t_tokens > max_total_tokens:
+                continue
+            output_parts.append(
+                f'<topic name="{topic}" count="{len(formatted)}">\n'
+                + "\n".join(formatted)
+                + '\n</topic>')
+            total += t_tokens
+
+        return "\n\n".join(output_parts)
+
     @staticmethod
     def _strip_zulip_quotes(content: str) -> str:
         """Strip Zulip quote-reply blocks to avoid duplicating context."""

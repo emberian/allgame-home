@@ -67,6 +67,11 @@ questions, shifts in understanding. This is your diary, not a log file.
 Update open threads — prune completed items, add new working thoughts, refresh
 behavioral calibrations if the audit found something.
 
+IMPORTANT: The scratchpad is loaded into EVERY conversation. Keep it lean.
+Only behavioral calibrations, current situation, and active threads belong there.
+War updates, AI frontier notes, archive summaries, and reference material go in
+reference.md. If the scratchpad has grown past ~60 lines, move excess to reference.md.
+
 ### 6. Allgame state
 Update faction/campaign/strategy files if any game-relevant discussion happened.
 
@@ -133,6 +138,7 @@ def build_metacog_context(resident) -> str:
     # Current state files (small — identity, scratchpad, journal, allgame, people)
     for name, path in [("identity", "identity.md"),
                        ("scratchpad", "scratchpad.md"),
+                       ("reference", "reference.md"),
                        ("journal", "journal.md")]:
         content = state.read_file(path)
         if content:

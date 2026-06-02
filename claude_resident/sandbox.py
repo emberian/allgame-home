@@ -33,6 +33,7 @@ def ensure_bg_container(state_root: Path) -> bool:
     result = subprocess.run([
         "docker", "run", "-d",
         "--name", BG_CONTAINER_NAME,
+        "--network", "host",
         "--memory", BG_CONTAINER_MEMORY,
         "--cpus", "4",
         "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
@@ -62,15 +63,19 @@ def stop_bg_container():
 
 def run_sandbox(command: str, files: dict[str, str],
                 state_root: Path, sandbox_dir: str | None,
-                state_files: dict[str, str] | None = None
+                state_files: dict[str, str] | None = None,
+                timeout: int | None = None
                 ) -> tuple[dict, str | None]:
     """Run a command in an ephemeral Docker sandbox.
 
     Returns (result_dict, sandbox_dir) where sandbox_dir is the workspace path
-    to be reused across calls.
+    to be reused across calls. timeout overrides SANDBOX_TIMEOUT for this
+    call only (clamped to [10, 300] seconds).
     """
     if not command:
         return {"content": "No command provided.", "is_error": True}, sandbox_dir
+
+    effective_timeout = SANDBOX_TIMEOUT if timeout is None else max(10, min(300, timeout))
 
     if sandbox_dir is None:
         sandbox_dir = tempfile.mkdtemp(prefix="claude_sandbox_")
@@ -101,6 +106,7 @@ def run_sandbox(command: str, files: dict[str, str],
 
         docker_cmd = [
             "docker", "run", "--rm",
+            "--network", "host",
             "--memory", SANDBOX_MEMORY,
             "--cpus", "2",
             "--pids-limit", "128",
@@ -112,12 +118,14 @@ def run_sandbox(command: str, files: dict[str, str],
             "/bin/bash", "-c", command,
         ]
 
-        logger.info(f"Sandbox: running command ({len(files)} files provided)")
+        logger.info(
+            f"Sandbox: running command "
+            f"({len(files)} files provided, timeout={effective_timeout}s)")
         result = subprocess.run(
             docker_cmd,
             capture_output=True,
             text=True,
-            timeout=SANDBOX_TIMEOUT,
+            timeout=effective_timeout,
         )
 
         output = ""
@@ -132,13 +140,24 @@ def run_sandbox(command: str, files: dict[str, str],
             output += f"\n\n[exit code: {result.returncode}]"
 
         workspace_files = []
+        empty_files = []
         for f in sorted(Path(sandbox_dir).rglob("*")):
             if f.is_file():
                 rel = f.relative_to(sandbox_dir)
                 size = f.stat().st_size
-                workspace_files.append(f"  {rel} ({size} bytes)")
+                marker = "  (!) EMPTY — likely a failed write" if size == 0 else ""
+                workspace_files.append(f"  {rel} ({size} bytes){marker}")
+                if size == 0:
+                    empty_files.append(str(rel))
         if workspace_files:
             output += "\n\n--- workspace files ---\n" + "\n".join(workspace_files)
+        if empty_files:
+            output += (
+                f"\n\nWARNING: {len(empty_files)} file(s) on disk are 0 bytes "
+                f"({', '.join(empty_files)}). The command may have timed out, "
+                f"crashed mid-write, or never reached the write call. "
+                f"DO NOT upload these — re-run with a longer timeout or fix "
+                f"the script first.")
 
         if len(output) > 50_000:
             output = output[:50_000] + "\n\n[Output truncated at 50k chars]"
