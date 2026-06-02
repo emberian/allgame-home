@@ -17,6 +17,7 @@ from claude_resident.config import (
 from claude_resident.state import StateManager
 from claude_resident.sessions import SessionManager
 from claude_resident.judge import EngagementJudge
+from claude_resident.handled import HandledSet
 from claude_resident.reactions import emoji_display, handle_reaction_event
 from claude_resident.prompt import (
     SYSTEM_PROMPT,
@@ -65,6 +66,9 @@ class ClaudeResident:
         self._msg_index: dict[int, dict] = {}
         self._pending_reactions: dict[tuple[str, str], list[str]] = {}
         self._MSG_INDEX_CAP = 10_000
+        # Durable across-restart ledger of message ids already handled, so
+        # replay/restart never re-responds to a message we already processed.
+        self.handled = HandledSet(self.state)
         # Typing indicator tracking: {(stream, topic): timestamp_of_last_start}
         self._typing_active: dict[tuple[str, str], float] = {}
         # Stream ID → stream name mapping (populated from events)
@@ -109,6 +113,17 @@ class ClaudeResident:
         msg_id = message.get("id")
         timestamp = datetime.now(timezone.utc).isoformat()
 
+        # Durable dedup: if we already handled this message in a prior run
+        # (or earlier this run via a duplicate event), never process it again.
+        # This is what keeps a restart/replay from re-responding to the last
+        # thing Claude already answered, regardless of who appears to be the
+        # "last speaker."
+        if msg_id and msg_id in self.handled:
+            self.logger.info(
+                f"Skipping #{stream}>{topic} from {sender}: already handled "
+                f"(msg {msg_id})")
+            return
+
         # Skip logging if already indexed (e.g., from backfill/replay)
         already_logged = msg_id and msg_id in self._msg_index
         if not already_logged:
@@ -126,11 +141,18 @@ class ClaudeResident:
             self.logger.info(
                 f"Skipping #{stream}>{topic} from {sender}: "
                 f"{self.judge.last_reason}")
+            # Decided not to respond — record it so a restart doesn't
+            # re-litigate the same message through the judge.
+            self.handled.mark(msg_id)
             return
 
-        now = time.time()
-        if now - self.last_response_time < COOLDOWN_SECONDS:
-            time.sleep(COOLDOWN_SECONDS - (now - self.last_response_time))
+        # The engagement judge (System 1) may have left a remark for Claude.
+        # Capture it now, before anything else can touch the judge.
+        judge_remark = getattr(self.judge, "last_remark", "") or ""
+
+        # --- Minimum pause before any visible action (typing indicator etc).
+        # Gives the human a beat to see their own message land. ---
+        time.sleep(COOLDOWN_SECONDS)
 
         # --- Typing hold-off: wait if someone is actively typing ---
         self._wait_for_typing(stream, topic)
@@ -150,11 +172,13 @@ class ClaudeResident:
 
         # --- Staleness check ---
         if not is_first_message:
-            tier23_keys = {"identity", "scratchpad", "inbox"}
-            if stream.lower() == "allgame":
-                tier23_keys |= {"allgame/faction.md",
-                                "allgame/campaign_log.md",
-                                "allgame/strategy.md"}
+            # Allgame files are loaded into tier 3 for every stream now
+            # (so off-allgame Claude has game context), so they participate
+            # in the staleness check universally.
+            tier23_keys = {"identity", "scratchpad", "inbox",
+                           "allgame/faction.md",
+                           "allgame/campaign_log.md",
+                           "allgame/strategy.md"}
             stale_count = sum(
                 1 for k in tier23_keys
                 if session.state_fingerprints.get(k) != new_fingerprints.get(k))
@@ -194,7 +218,34 @@ class ClaudeResident:
                         + "\n</reactions_received>")
             content_blocks = [{"type": "text", "text": rxn_text}] + content_blocks
 
+        # System-1 backchannel: the Haiku engagement judge let this message
+        # through and left a note. Appended after the message so it reads as a
+        # margin note on what was just received — your reflex layer radioing in.
+        if judge_remark:
+            remark_text = ("<judge_remark>\n"
+                           "A note from your engagement judge (Haiku / your "
+                           "System 1), which decided this message was worth "
+                           "your attention:\n"
+                           f"{judge_remark}\n"
+                           "</judge_remark>")
+            content_blocks = content_blocks + [
+                {"type": "text", "text": remark_text}]
+
         session.state_fingerprints = new_fingerprints
+
+        # Verbosity signal: if Claude has sent 3+ messages this session,
+        # inject average word count so he can see his own drift.
+        if len(session.send_word_counts) >= 3:
+            avg_words = sum(session.send_word_counts) / len(session.send_word_counts)
+            last_words = session.send_word_counts[-1]
+            verbosity_note = (
+                f"[session stats: your last {len(session.send_word_counts)} "
+                f"messages averaged {avg_words:.0f} words "
+                f"(last: {last_words})]"
+            )
+            content_blocks = [
+                {"type": "text", "text": verbosity_note}
+            ] + content_blocks
 
         # Strip base64 image data from older messages to prevent accumulation.
         # Images are only useful for the turn they arrive — after that, the
@@ -232,6 +283,12 @@ class ClaudeResident:
         finally:
             typing_stop.set()
             self._send_typing(stream, topic, "stop")
+
+        # The response turn completed (posted or deliberate silence) — record
+        # the triggering message as handled so a restart never replays it.
+        # (On the exception path above we returned without marking, so a
+        # crashed turn is still eligible for a retry on the next run.)
+        self.handled.mark(msg_id)
 
         # Handle XML fallbacks (safety net for state updates)
         if internal_text and internal_text.strip():
@@ -455,9 +512,35 @@ class ClaudeResident:
                             f"Anthropic API error (turn {turn}): {e}")
                         break
                 except anthropic.APIError as e:
-                    self.logger.error(
-                        f"Anthropic API error (turn {turn}): {e}")
-                    break
+                    if e.status_code == 529:
+                        for attempt in range(3):
+                            wait = 30 * (attempt + 1)
+                            self.logger.warning(
+                                f"API overloaded (529) at turn {turn}, "
+                                f"retry {attempt+1}/3 in {wait}s")
+                            time.sleep(wait)
+                            try:
+                                response = self.anthropic.messages.create(
+                                    model=self.model,
+                                    max_tokens=MAX_RESPONSE_TOKENS,
+                                    thinking=thinking_param,
+                                    system=system,
+                                    tools=TOOL_DEFINITIONS,
+                                    messages=session.messages,
+                                )
+                                break
+                            except anthropic.APIError as e2:
+                                if e2.status_code != 529 or attempt == 2:
+                                    self.logger.error(
+                                        f"API error after retries: {e2}")
+                                    response = None
+                                    break
+                        if response is None:
+                            break
+                    else:
+                        self.logger.error(
+                            f"Anthropic API error (turn {turn}): {e}")
+                        break
 
                 usage = response.usage
                 input_tokens = getattr(usage, 'input_tokens', 0)
@@ -465,9 +548,17 @@ class ClaudeResident:
                     usage, 'cache_read_input_tokens', 0)
                 cache_create = getattr(
                     usage, 'cache_creation_input_tokens', 0)
+                output_tokens = getattr(usage, 'output_tokens', 0)
                 # Total context = uncached + cached read + cached write
                 total_input = input_tokens + cache_read + cache_create
                 session.estimated_message_tokens = total_input
+                # Cost: Opus 4.x base pricing per MTok ($5 in / $25 out).
+                cost_input = input_tokens * 5.0 / 1_000_000
+                cost_cache_write = cache_create * 6.25 / 1_000_000
+                cost_cache_read = cache_read * 0.50 / 1_000_000
+                cost_output = output_tokens * 25.0 / 1_000_000
+                cost_total = (cost_input + cost_cache_write
+                              + cost_cache_read + cost_output)
                 if turn == 0:
                     self.logger.info(
                         f"Cache: {cache_read} read, {cache_create} created, "
@@ -475,6 +566,14 @@ class ClaudeResident:
                         f"session #{session.stream}>{session.topic} "
                         f"msg#{session.message_count} "
                         f"({len(session.messages)} msgs in history)")
+                self.logger.info(
+                    f"Cost turn {turn}: "
+                    f"${cost_total:.4f} "
+                    f"(in=${cost_input:.4f} "
+                    f"cw=${cost_cache_write:.4f} "
+                    f"cr=${cost_cache_read:.4f} "
+                    f"out=${cost_output:.4f}) "
+                    f"[{output_tokens} out tok]")
 
                 archive_api_response(
                     self.state, response, stream, topic, sender, turn)
@@ -495,6 +594,32 @@ class ClaudeResident:
                     break
 
                 if response.stop_reason == "end_turn" or not tool_use_blocks:
+                    # Check if model generated text but forgot to call
+                    # send_message/add_reaction. Re-prompt once to fix.
+                    has_text = any(
+                        getattr(b, "text", "").strip()
+                        for b in response.content
+                        if getattr(b, "type", "") == "text")
+                    if has_text and not all_posted_ids and turn < 2:
+                        self.logger.warning(
+                            f"Turn {turn + 1}: text output but no visible "
+                            f"action — re-prompting to call send_message")
+                        session.messages.append({
+                            "role": "assistant",
+                            "content": response.content})
+                        session.messages.append({
+                            "role": "user",
+                            "content": [{
+                                "type": "text",
+                                "text": (
+                                    "[SYSTEM] Your text output is invisible — "
+                                    "nobody sees it. You MUST call send_message "
+                                    "to post publicly, or add_reaction to react. "
+                                    "Please call send_message now with your response."
+                                ),
+                            }],
+                        })
+                        continue
                     session.messages.append({
                         "role": "assistant",
                         "content": response.content})
@@ -520,6 +645,8 @@ class ClaudeResident:
                     topic=topic,
                     sender=sender,
                     message=message,
+                    anthropic_client=self.anthropic,
+                    default_model=self.model,
                 )
                 tool_results = []
                 for block in tool_use_blocks:
@@ -534,6 +661,8 @@ class ClaudeResident:
                 # Propagate side effects back
                 self._sandbox_dir = ctx.sandbox_dir
                 all_posted_ids.extend(ctx.posted_ids)
+                session.send_word_counts.extend(ctx.send_word_counts)
+                ctx.send_word_counts.clear()
                 if ctx.restart_requested:
                     self._restart_requested = True
 

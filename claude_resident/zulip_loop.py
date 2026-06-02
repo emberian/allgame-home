@@ -6,7 +6,13 @@ import time
 import logging
 from datetime import datetime, timezone
 
-from claude_resident.config import HARNESS_DIR
+from claude_resident.config import (
+    HARNESS_DIR,
+    BACKFILL_PER_STANDING_STREAM,
+    BACKFILL_OTHER_STREAMS,
+    BACKFILL_ALL_STREAMS,
+    METACOG_ENABLED,
+)
 from claude_resident.metacog import MetacogRunner
 from claude_resident.reactions import emoji_display
 from claude_resident.sandbox import ensure_bg_container, stop_bg_container
@@ -16,14 +22,38 @@ logger = logging.getLogger("zulip_loop")
 
 
 def backfill_history(resident):
-    """Fetch recent message history from Zulip API to populate local logs on startup."""
+    """Fetch recent message history from Zulip API to populate local logs on startup.
+
+    Standing streams get a deep backfill; if BACKFILL_ALL_STREAMS is set, every
+    other visible stream gets a smaller tail so cross-channel context is at
+    least seeded.
+    """
     logger.info("Backfilling message history from Zulip API...")
 
-    for stream in resident.judge.standing_streams:
+    standing = set(resident.judge.standing_streams)
+    stream_targets: list[tuple[str, int]] = [
+        (s, BACKFILL_PER_STANDING_STREAM) for s in resident.judge.standing_streams
+    ]
+
+    if BACKFILL_ALL_STREAMS:
+        try:
+            streams_result = resident.zulip.get_streams()
+            if streams_result.get("result") == "success":
+                for s in streams_result.get("streams", []):
+                    name = s.get("name")
+                    if name and name not in standing:
+                        stream_targets.append((name, BACKFILL_OTHER_STREAMS))
+            else:
+                logger.warning(
+                    f"get_streams failed: {streams_result.get('msg')}")
+        except Exception as e:
+            logger.warning(f"Failed to enumerate streams for backfill: {e}")
+
+    for stream, num_before in stream_targets:
         try:
             result = resident.zulip.get_messages({
                 "anchor": "newest",
-                "num_before": 100,
+                "num_before": num_before,
                 "num_after": 0,
                 "narrow": json.dumps(
                     [{"operator": "channel", "operand": stream}]),
@@ -150,6 +180,11 @@ def replay_pending(resident):
                 sender = last_msg.get("sender_full_name", "").lower()
                 if bot_name in sender:
                     continue
+                # Durable dedup: skip anything we already handled in a prior
+                # run. This is the real fix for re-responding on restart —
+                # the "last speaker" check above is only a coarse heuristic.
+                if last_msg.get("id") in resident.handled:
+                    continue
                 pending.append(last_msg)
 
         except Exception as e:
@@ -190,15 +225,7 @@ def run(resident):
     except Exception:
         pass
 
-    # Check for unreplied messages from before restart
-    replay_pending(resident)
-
-    # Start metacognitive loop
-    metacog_runner = MetacogRunner(resident)
-    resident._metacog_runner = metacog_runner
-    metacog_runner.start()
-
-    # Pre-populate stream ID map for typing events
+    # Pre-populate stream ID map for typing events (must be before replay)
     try:
         streams_result = resident.zulip.get_streams()
         if streams_result.get("result") == "success":
@@ -208,6 +235,17 @@ def run(resident):
                 f"Populated stream ID map: {len(resident._stream_id_map)} streams")
     except Exception as e:
         logger.warning(f"Failed to populate stream ID map: {e}")
+
+    # Check for unreplied messages from before restart
+    replay_pending(resident)
+
+    # Start metacognitive loop (gated by config flag)
+    if METACOG_ENABLED:
+        metacog_runner = MetacogRunner(resident)
+        resident._metacog_runner = metacog_runner
+        metacog_runner.start()
+    else:
+        logger.info("Metacog runner disabled via config (METACOG_ENABLED=False)")
 
     result = resident.zulip.register(
         event_types=["message", "reaction", "typing"],
