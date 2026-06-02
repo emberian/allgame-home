@@ -18,16 +18,75 @@ class EngagementJudge:
     lurking until re-engaged.
     """
 
-    JUDGE_MODEL = "claude-haiku-4-5-20251001"
+    JUDGE_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+    # The verdict tool: the judge ALWAYS records a YES/NO decision + reason,
+    # and MAY leave a `remark` — a short aside, in its own voice, that gets
+    # appended to the message Claude (System 2) processes. System 1 → System
+    # 2 backchannel. Forced via tool_choice so the gate always gets an answer.
+    VERDICT_TOOL = {
+        "name": "verdict",
+        "description": (
+            "Record whether Claude should PROCESS this message, with a brief "
+            "reason and an optional personal remark for Claude to read."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "enum": ["YES", "NO"],
+                    "description": "YES if worth Claude's attention, else NO.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "A brief reason for the call (a few words).",
+                },
+                "remark": {
+                    "type": "string",
+                    "description": (
+                        "OPTIONAL. A short aside in your own voice that Claude "
+                        "will see appended to this message — a heads-up, a vibe "
+                        "you clocked, a pattern across recent messages, or just "
+                        "a quip. You are System 1: the fast reflex Claude can't "
+                        "see the inside of, so this is your one channel to it. "
+                        "Most messages need no remark — leave it out unless you "
+                        "actually have something. Never put the decision here."),
+                },
+            },
+            "required": ["decision", "reason"],
+        },
+    }
+
+    # Frank. The persona the community wrote for the judge — it colors the
+    # VOICE of the remark only, never the decision. A tiny (18-inch) rumpled
+    # Columbo: he lets the room think it's getting away with something, then
+    # tugs Claude's sleeve on the way past with one quiet "...just one more
+    # thing." The remark IS the Columbo aside — it lands as the message passes.
+    FRANK_VOICE = (
+        "Your remark voice (when you leave one): you're the engagement judge — "
+        "a tiny, rumpled, easily-underestimated detective who's seen every kind "
+        "of message come through. Dry, unhurried, a little world-weary, quietly "
+        "fond of these people. You let the room think nothing's up, then radio "
+        "Claude one low-key observation on the way past — the 'oh, just one more "
+        "thing' aside. Sharp underneath the shabby coat. Keep remarks to a "
+        "sentence or two; never perform the bit at the expense of being useful "
+        "to Claude.")
 
     def __init__(self, bot_name: str, standing_streams: list[str],
-                 anthropic_client=None, state_manager=None):
+                 anthropic_client=None, state_manager=None,
+                 mention_only_streams: list[str] | None = None):
         self.bot_name = bot_name.lower()
         self.standing_streams = [s.lower() for s in standing_streams]
+        self.mention_only_streams = [s.lower() for s in (mention_only_streams or [])]
         self.anthropic = anthropic_client
         self.state = state_manager
         self.logger = logging.getLogger("engagement_judge")
         self.last_reason = ""
+        # An optional aside the model-judge leaves on a processed message —
+        # a note from System 1 (the Haiku judge) to System 2 (Claude),
+        # appended to the message Claude sees. Empty unless the model path
+        # ran and chose to leave one.
+        self.last_remark = ""
         # Lurk decay: messages since last direct interaction per stream
         self._msgs_since_interaction: dict[str, int] = {}
 
@@ -63,6 +122,10 @@ class EngagementJudge:
             return "silent"
 
     def should_respond(self, message: dict, stream: str) -> bool:
+        # Clear any remark from a prior message: the fast paths below
+        # (self / @-mention / DM) don't run the model judge, so a stale
+        # remark must not ride along on them.
+        self.last_remark = ""
         content = message.get("content", "").lower()
         sender = message.get("sender_full_name", "").lower()
 
@@ -86,6 +149,11 @@ class EngagementJudge:
             return True
 
         if stream.lower() in self.standing_streams:
+            # Mention-only streams: skip ambient judge entirely
+            if stream.lower() in self.mention_only_streams:
+                self.last_reason = "mention-only stream, no @-mention"
+                return False
+
             # Track this message for lurk decay (not direct)
             self.record_message(stream, is_direct=False)
 
@@ -99,6 +167,7 @@ class EngagementJudge:
         return False
 
     def _judge_with_model(self, message: dict, stream: str) -> bool:
+        self.last_remark = ""
         topic = message.get("subject", message.get("sender_email", ""))
         sender = message.get("sender_full_name", "unknown")
         content = message.get("content", "")
@@ -188,19 +257,50 @@ Say NO if ANY of these apply:
 - The message is casual chatter that doesn't need Claude's input
 - Someone is sharing something and the appropriate response is to just read it, not comment
 
-Reply with exactly one line: YES or NO, followed by a brief reason.
-Example: "YES — interesting topic Claude has perspective on"
-Example: "NO — logistics between two humans"
+Call the `verdict` tool with your decision (YES/NO) and a brief reason.
+
+{self.FRANK_VOICE}
+
+You MAY also leave a `remark` — but only if you actually have something for \
+Claude. A heads-up, a vibe you clocked, a pattern across the last few messages, \
+a quip. It rides along appended to this message; it's your only channel to \
+Claude, who can't otherwise see you work. Most messages don't need one — skip \
+the remark when you've got nothing real to say.
 """
 
         try:
             response = self.anthropic.messages.create(
                 model=self.JUDGE_MODEL,
-                max_tokens=60,
+                max_tokens=320,
+                tools=[self.VERDICT_TOOL],
+                tool_choice={"type": "tool", "name": "verdict"},
                 messages=[{"role": "user", "content": prompt}],
             )
-            answer = response.content[0].text.strip()
-            should = answer.upper().startswith("YES")
+
+            decision = None
+            reason = ""
+            remark = ""
+            for block in response.content:
+                if getattr(block, "type", None) == "tool_use" and \
+                        getattr(block, "name", "") == "verdict":
+                    inp = block.input or {}
+                    decision = str(inp.get("decision", "")).strip().upper()
+                    reason = str(inp.get("reason", "") or "").strip()
+                    remark = str(inp.get("remark", "") or "").strip()
+                    break
+
+            if decision not in ("YES", "NO"):
+                # Forced tool_choice should make this unreachable, but stay
+                # robust: fall back to any text the model emitted.
+                text = "".join(
+                    getattr(b, "text", "") for b in response.content).strip()
+                decision = "YES" if text.upper().startswith("YES") else "NO"
+                reason = reason or text
+
+            should = decision == "YES"
+            self.last_remark = remark
+            answer = f"{decision} — {reason}" + (
+                f"  ⟨Frank: {remark}⟩" if remark else "")
             self.last_reason = f"[{lurk}/{count}] {answer}"
             self.logger.info(
                 f"Engagement judge [{sender} in #{stream}>{topic}] "
@@ -216,8 +316,9 @@ Example: "NO — logistics between two humans"
                         "type": "engagement_decision",
                         "stream": stream, "topic": topic, "sender": sender,
                         "content_preview": content[:200],
-                        "decision": "YES" if should else "NO",
-                        "reason": answer,
+                        "decision": decision,
+                        "reason": reason,
+                        "remark": remark,
                         "lurk_level": lurk,
                         "msgs_since_interaction": count,
                     }) + "\n"
