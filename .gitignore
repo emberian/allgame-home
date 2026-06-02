@@ -1,3 +1,5 @@
 .env
 .zuliprc
 __pycache__/
+.zuliprc-*
+deblog.txt
