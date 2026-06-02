@@ -14,4 +14,6 @@ def edit_harness_tool(inp: dict, state) -> dict:
         commit_message=inp.get("commit_message", "Claude self-edit"),
         state=state,
         file=inp.get("file"),
+        edits=inp.get("edits"),
+        action=inp.get("action", "edit"),
     )

@@ -4,6 +4,8 @@ import base64
 import logging
 from pathlib import Path
 
+from claude_resident.util import zulip_upload_file
+
 logger = logging.getLogger("tools.sandbox")
 
 
@@ -51,19 +53,29 @@ def upload_sandbox_file(inp: dict, sandbox_dir: str | None,
     filepath = Path(sandbox_dir) / path
     if not filepath.exists():
         return {"content": f"File not found: {path}", "is_error": True}
+    if not filepath.is_file():
+        return {"content": f"Not a file: {path}", "is_error": True}
+
+    size = filepath.stat().st_size
+    if size == 0:
+        return {"content":
+                f"File is empty (0 bytes): {path}. Check whether the "
+                f"command that produced it actually wrote output.",
+                "is_error": True}
+    if size > 20 * 1024 * 1024:
+        return {"content":
+                f"File too large ({size} bytes, max 20 MB). "
+                f"Split or compress first.", "is_error": True}
 
     try:
-        with open(filepath, "rb") as f:
-            result = zulip_client.upload_file(f)
-
+        result = zulip_upload_file(filepath, zulip_client)
         if result.get("result") == "success":
             uri = result["uri"]
-            logger.info(f"Sandbox: uploaded {path} -> {uri}")
-            return {"content": f"Uploaded successfully. "
+            logger.info(
+                f"Sandbox: uploaded {path} -> {uri} ({size} bytes)")
+            return {"content": f"Uploaded {path} ({size} bytes). "
                     f"Use this in your message: [{filepath.name}]({uri})"}
-        else:
-            return {"content": f"Upload failed: {result.get('msg', 'unknown')}",
-                    "is_error": True}
-
+        return {"content": f"Upload failed: {result.get('msg', 'unknown')}",
+                "is_error": True}
     except Exception as e:
         return {"content": f"Upload error: {e}", "is_error": True}

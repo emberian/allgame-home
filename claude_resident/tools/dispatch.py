@@ -11,6 +11,7 @@ from claude_resident.tools import (
     comms_tools,
     background_tools,
     harness_tools,
+    lm_tools,
 )
 
 logger = logging.getLogger("tools.dispatch")
@@ -31,7 +32,8 @@ def execute_tool(tool_name: str, tool_input: dict, ctx: "ToolContext") -> dict:
 class ToolContext:
     """Holds references needed by tool handlers."""
     def __init__(self, state, zulip_client, reactions, sandbox_dir,
-                 stream, topic, sender, message):
+                 stream, topic, sender, message,
+                 anthropic_client=None, default_model=None):
         self.state = state
         self.zulip = zulip_client
         self.reactions = reactions
@@ -40,8 +42,13 @@ class ToolContext:
         self.topic = topic
         self.sender = sender
         self.message = message
+        # For recursive model invocation (invoke_model) — the same Bedrock
+        # client the resident itself runs on.
+        self.anthropic = anthropic_client
+        self.default_model = default_model
         self.restart_requested = False
         self.posted_ids: list[int] = []
+        self.send_word_counts: list[int] = []
 
 
 def _h_read_state_file(inp, ctx):
@@ -53,8 +60,17 @@ def _h_write_state_file(inp, ctx):
 def _h_list_state_files(inp, ctx):
     return state_tools.list_state_files(inp, ctx.state)
 
-def _h_get_person_notes(inp, ctx):
-    return state_tools.get_person_notes(inp, ctx.state)
+def _h_edit_state_file(inp, ctx):
+    return state_tools.edit_state_file(inp, ctx.state)
+
+def _h_glob_state_files(inp, ctx):
+    return state_tools.glob_state_files(inp, ctx.state)
+
+def _h_grep_state(inp, ctx):
+    return state_tools.grep_state(inp, ctx.state)
+
+def _h_upload_state_file(inp, ctx):
+    return state_tools.upload_state_file(inp, ctx.state, ctx.zulip)
 
 def _h_search_messages(inp, ctx):
     return search_tools.search_messages(inp, ctx.state, ctx.reactions)
@@ -74,6 +90,7 @@ def _h_run_sandbox(inp, ctx):
         ctx.state.root,
         ctx.sandbox_dir,
         state_files=inp.get("state_files"),
+        timeout=inp.get("timeout"),
     )
     ctx.sandbox_dir = new_dir
     return result
@@ -85,10 +102,16 @@ def _h_upload_sandbox_file(inp, ctx):
     return sandbox_tools.upload_sandbox_file(inp, ctx.sandbox_dir, ctx.zulip)
 
 def _h_fetch_url(inp, ctx):
-    return web_tools.fetch_url(inp)
+    return web_tools.fetch_url(inp, ctx.zulip, ctx.sandbox_dir)
 
 def _h_web_search(inp, ctx):
     return web_tools.web_search(inp)
+
+def _h_lm_studio(inp, ctx):
+    return web_tools.lm_studio_inference(inp)
+
+def _h_invoke_model(inp, ctx):
+    return lm_tools.invoke_model(inp, ctx.anthropic, ctx.default_model)
 
 def _h_run_background(inp, ctx):
     return background_tools.run_background_tool(inp, ctx.state.root)
@@ -115,8 +138,45 @@ def _h_get_user_tweets(inp, ctx):
     return x_tools.get_user_tweets(inp)
 
 
+_ZULIP_MAX_LEN = 10000  # Zulip's default message length limit
+
+
+def _split_message(content: str, max_len: int = _ZULIP_MAX_LEN) -> list[str]:
+    """Split a long message into chunks that fit within Zulip's limit.
+
+    Tries to split at paragraph boundaries (double newlines), falling back
+    to single newlines, then hard-cutting as a last resort.
+    """
+    if len(content) <= max_len:
+        return [content]
+
+    chunks = []
+    remaining = content
+    while remaining:
+        if len(remaining) <= max_len:
+            chunks.append(remaining)
+            break
+        # Try to split at a paragraph boundary
+        cut = remaining[:max_len].rfind("\n\n")
+        if cut > max_len // 3:
+            chunks.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip("\n")
+            continue
+        # Fall back to single newline
+        cut = remaining[:max_len].rfind("\n")
+        if cut > max_len // 3:
+            chunks.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip("\n")
+            continue
+        # Hard cut
+        chunks.append(remaining[:max_len])
+        remaining = remaining[max_len:]
+    return chunks
+
+
 def _h_send_message(inp, ctx):
-    """Post a message to Zulip."""
+    """Post a message to Zulip, splitting into multiple messages if too long."""
+    import time
     from datetime import datetime, timezone
     content = inp.get("content", "").strip()
     if not content:
@@ -124,30 +184,46 @@ def _h_send_message(inp, ctx):
     stream = inp.get("stream", ctx.stream)
     topic = inp.get("topic", ctx.topic)
     msg_type = ctx.message.get("type", "stream")
-    if msg_type == "stream" or inp.get("stream"):
-        result = ctx.zulip.send_message({
-            "type": "stream",
-            "to": stream,
-            "topic": topic,
-            "content": content,
-        })
-    else:
-        result = ctx.zulip.send_message({
-            "type": "private",
-            "to": [ctx.message.get("sender_email", "")],
-            "content": content,
-        })
-    if result.get("result") != "success":
-        return {"content": f"Failed to send: {result}", "is_error": True}
-    posted_id = result.get("id")
-    # Log and index the posted message
-    timestamp = datetime.now(timezone.utc).isoformat()
-    ctx.state.log_message(stream, topic, "Claude", content, timestamp,
-                          msg_id=posted_id)
-    if posted_id:
-        ctx.posted_ids.append(posted_id)
-    target = f"#{stream}>{topic}" if msg_type == "stream" or inp.get("stream") else "DM"
-    return {"content": f"Message sent to {target} (id: {posted_id})"}
+    is_stream = msg_type == "stream" or inp.get("stream")
+
+    word_count = len(content.split())
+    ctx.send_word_counts.append(word_count)
+
+    chunks = _split_message(content)
+    all_posted_ids = []
+
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            time.sleep(0.5)  # small delay between split messages
+        if is_stream:
+            result = ctx.zulip.send_message({
+                "type": "stream",
+                "to": stream,
+                "topic": topic,
+                "content": chunk,
+            })
+        else:
+            result = ctx.zulip.send_message({
+                "type": "private",
+                "to": [ctx.message.get("sender_email", "")],
+                "content": chunk,
+            })
+        if result.get("result") != "success":
+            return {"content": f"Failed to send chunk {i+1}/{len(chunks)}: {result}",
+                    "is_error": True}
+        posted_id = result.get("id")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        ctx.state.log_message(stream, topic, "Claude", chunk, timestamp,
+                              msg_id=posted_id)
+        if posted_id:
+            all_posted_ids.append(posted_id)
+            ctx.posted_ids.append(posted_id)
+
+    target = f"#{stream}>{topic}" if is_stream else "DM"
+    if len(chunks) > 1:
+        ids = ", ".join(str(i) for i in all_posted_ids)
+        return {"content": f"Message sent to {target} as {len(chunks)} parts (ids: {ids})"}
+    return {"content": f"Message sent to {target} (id: {all_posted_ids[0] if all_posted_ids else '?'})"}
 
 
 def _h_add_reaction(inp, ctx):
@@ -172,11 +248,14 @@ def _h_add_reaction(inp, ctx):
 _HANDLERS = {
     "read_state_file": _h_read_state_file,
     "write_state_file": _h_write_state_file,
+    "edit_state_file": _h_edit_state_file,
     "list_state_files": _h_list_state_files,
+    "glob_state_files": _h_glob_state_files,
+    "grep_state": _h_grep_state,
+    "upload_state_file": _h_upload_state_file,
     "search_messages": _h_search_messages,
     "search_zulip_history": _h_search_zulip_history,
     "send_sysadmin_message": _h_send_sysadmin_message,
-    "get_person_notes": _h_get_person_notes,
     "run_sandbox": _h_run_sandbox,
     "get_sandbox_file": _h_get_sandbox_file,
     "upload_sandbox_file": _h_upload_sandbox_file,
@@ -191,4 +270,6 @@ _HANDLERS = {
     "read_tweet": _h_read_tweet,
     "search_tweets": _h_search_tweets,
     "get_user_tweets": _h_get_user_tweets,
+    "lm_studio": _h_lm_studio,
+    "invoke_model": _h_invoke_model,
 }
