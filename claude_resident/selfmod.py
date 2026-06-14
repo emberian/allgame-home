@@ -3,6 +3,7 @@
 import ast
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -27,6 +28,36 @@ def _verify_parse(path: Path, source: str) -> str | None:
         return None
     except SyntaxError as e:
         return f"{e.msg} (line {e.lineno})"
+
+
+def _verify_import(pkg_dir: Path) -> str | None:
+    """Import every harness submodule in a fresh subprocess against the
+    on-disk source. Catches what ast.parse cannot: NameErrors at import,
+    broken/removed imports, a deleted symbol another module still needs.
+    Returns the traceback tail on failure, else None.
+
+    This runs the *edited* working tree (the edit is already written to disk
+    when this is called), so a self-edit that would crash on the next boot is
+    caught here and rolled back before it is ever committed."""
+    script = (
+        "import importlib, pkgutil, claude_resident\n"
+        "for _m in pkgutil.walk_packages(claude_resident.__path__, "
+        "'claude_resident.'):\n"
+        "    importlib.import_module(_m.name)\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(pkg_dir.parent), capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return "import verification timed out (60s)"
+    except Exception as e:
+        return f"import verification could not run: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        tail = "\n".join(err.splitlines()[-12:])
+        return tail or f"import failed (exit {proc.returncode})"
+    return None
 
 
 def edit_harness(old_string: str, new_string: str, commit_message: str,
@@ -84,6 +115,15 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(new_string)
 
+        import_err = _verify_import(pkg_dir)
+        if import_err:
+            target.unlink(missing_ok=True)
+            logger.warning(
+                f"Harness create rolled back — import failed:\n{import_err}")
+            return {"content":
+                    f"Create rolled back — import error:\n{import_err}",
+                    "is_error": True}
+
         _git_run(["add", str(target)])
         result = _git_run(["commit", "-m",
                            f"Claude self-edit: {commit_message}"])
@@ -122,6 +162,19 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
                   f"Pre-delete checkpoint (before: {commit_message})"])
 
         target.unlink()
+
+        import_err = _verify_import(pkg_dir)
+        if import_err:
+            # Restore the file from the pre-delete checkpoint (current HEAD).
+            _git_run(["checkout", "HEAD", "--",
+                      str(target.relative_to(HARNESS_DIR))])
+            logger.warning(
+                f"Harness delete rolled back — import failed:\n{import_err}")
+            return {"content":
+                    f"Delete rolled back — something still imports {rel}:"
+                    f"\n{import_err}",
+                    "is_error": True}
+
         _git_run(["add", "-A"])
         result = _git_run(["commit", "-m",
                            f"Claude self-edit: {commit_message}"])
@@ -234,6 +287,16 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
                     f"Edit rolled back — parse error:\n{parse_err}",
                     "is_error": True}
 
+        import_err = _verify_import(pkg_dir)
+        if import_err:
+            target.write_text(original)
+            logger.warning(
+                f"Harness edit rolled back — import failed:\n{import_err}")
+            return {"content":
+                    f"Edit rolled back — import error (the edit parses but "
+                    f"breaks at import):\n{import_err}",
+                    "is_error": True}
+
         _git_run(["add", str(target)])
         result = _git_run(["commit", "-m",
                            f"Claude self-edit: {commit_message}"])
@@ -272,18 +335,27 @@ def last_commit_is_self_edit() -> bool:
         return False
 
 
-def rollback_last_commit():
-    """Revert the most recent git commit (assumed to be a bad self-edit)."""
+def rollback_last_commit() -> bool:
+    """Revert the most recent git commit (assumed to be a bad self-edit).
+
+    Returns True if the revert succeeded. On failure (e.g. conflicts) it
+    aborts the half-applied revert so the working tree isn't left stranded,
+    and returns False so the supervisor can stop trusting the rollback and
+    let the crash-loop breaker take over instead of looping forever."""
     try:
         result = subprocess.run(
             ["git", "revert", "HEAD", "--no-edit"],
             cwd=HARNESS_DIR, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             logger.warning(f"Rolled back self-edit: {result.stdout.strip()}")
-        else:
-            logger.error(f"Rollback failed: {result.stderr}")
+            return True
+        logger.error(f"Rollback failed: {result.stderr.strip()}")
+        subprocess.run(["git", "revert", "--abort"],
+                       cwd=HARNESS_DIR, capture_output=True, timeout=10)
+        return False
     except Exception as e:
         logger.error(f"Rollback error: {e}")
+        return False
 
 
 def notify_claude(state_dir: Path, msg: str):

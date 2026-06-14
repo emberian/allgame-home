@@ -46,13 +46,24 @@ def run_supervised(child_cmd: list[str], state_dir):
         if last_commit_is_self_edit():
             logger.warning(
                 "Supervisor: crash after self-edit — rolling back")
-            rollback_last_commit()
+            reverted = rollback_last_commit()
+            if reverted:
+                notify_claude(state_dir,
+                    f"My self-edit caused a runtime crash (exit code {rc}) "
+                    f"and was auto-reverted by the supervisor.")
+                # Only a confirmed revert earns a clean slate. Otherwise fall
+                # through to crash counting so a rollback that DIDN'T fix the
+                # crash trips the breaker instead of looping forever.
+                crash_times.clear()
+                logger.info("Supervisor: restarting after rollback")
+                continue
+            logger.error(
+                "Supervisor: rollback FAILED — counting this crash toward "
+                "the breaker instead of blindly restarting")
             notify_claude(state_dir,
-                f"My self-edit caused a runtime crash (exit code {rc}) "
-                f"and was auto-reverted by the supervisor.")
-            crash_times.clear()
-            logger.info("Supervisor: restarting after rollback")
-            continue
+                f"My self-edit crashed (exit code {rc}) AND the auto-revert "
+                f"failed. Supervisor is no longer trusting rollback; "
+                f"sysadmin intervention likely needed.")
 
         now = time.time()
         crash_times = [t for t in crash_times if now - t < CRASH_WINDOW]
