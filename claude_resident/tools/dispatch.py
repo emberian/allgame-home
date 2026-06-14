@@ -192,6 +192,12 @@ def _h_send_message(inp, ctx):
     chunks = _split_message(content)
     all_posted_ids = []
 
+    # Log target mirrors how inbound messages are recorded: stream/topic for
+    # public posts, ("dm", <peer email>) for private replies — otherwise a DM
+    # reply lands in the public channel log and pollutes search/context.
+    dm_email = ctx.message.get("sender_email", "")
+    log_stream, log_topic = (stream, topic) if is_stream else ("dm", dm_email)
+
     for i, chunk in enumerate(chunks):
         if i > 0:
             time.sleep(0.5)  # small delay between split messages
@@ -205,7 +211,7 @@ def _h_send_message(inp, ctx):
         else:
             result = ctx.zulip.send_message({
                 "type": "private",
-                "to": [ctx.message.get("sender_email", "")],
+                "to": [dm_email],
                 "content": chunk,
             })
         if result.get("result") != "success":
@@ -213,7 +219,7 @@ def _h_send_message(inp, ctx):
                     "is_error": True}
         posted_id = result.get("id")
         timestamp = datetime.now(timezone.utc).isoformat()
-        ctx.state.log_message(stream, topic, "Claude", chunk, timestamp,
+        ctx.state.log_message(log_stream, log_topic, "Claude", chunk, timestamp,
                               msg_id=posted_id)
         if posted_id:
             all_posted_ids.append(posted_id)
