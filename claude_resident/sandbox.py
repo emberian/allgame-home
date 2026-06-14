@@ -3,6 +3,7 @@
 import os
 import shutil
 import logging
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -203,11 +204,11 @@ def run_background(command: str, files: dict[str, str],
             safe_name = name.replace("..", "").lstrip("/")
             if not safe_name:
                 continue
+            qtarget = shlex.quote(f"/workspace/{safe_name}")
             write_cmd = [
                 "docker", "exec", BG_CONTAINER_NAME,
                 "bash", "-c",
-                f"mkdir -p $(dirname '/workspace/{safe_name}') "
-                f"&& cat > '/workspace/{safe_name}'"]
+                f"mkdir -p $(dirname {qtarget}) && cat > {qtarget}"]
             subprocess.run(write_cmd, input=content, capture_output=True,
                            text=True, timeout=10)
 
