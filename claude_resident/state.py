@@ -19,6 +19,20 @@ def _atomic_write(path: Path, content: str):
     tmp.write_text(content)
     os.replace(tmp, path)
 
+
+def _reaction_suffix(msg_id, reactions) -> str:
+    """Format a message's reactions as ' [👍x2, ❤x1]', or '' if none.
+
+    Single source for the reaction-rendering that several context-formatters
+    append to each line."""
+    if not reactions or msg_id is None or msg_id not in reactions:
+        return ""
+    rxns = reactions[msg_id]
+    if not rxns:
+        return ""
+    rxn_str = ", ".join(f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
+    return f" [{rxn_str}]" if rxn_str else ""
+
 logger = logging.getLogger("state_manager")
 
 
@@ -201,14 +215,7 @@ class StateManager:
                 text = (f"[{m['ts']}] #{m.get('topic', '?')} | "
                         f"{m['sender']}: {content}")
                 msg_id = m.get("msg_id")
-                if reactions and msg_id and msg_id in reactions:
-                    rxns = reactions[msg_id]
-                    if rxns:
-                        rxn_str = ", ".join(
-                            f"{e}x{c}" for e, c in sorted(rxns.items())
-                            if c > 0)
-                        if rxn_str:
-                            text += f" [{rxn_str}]"
+                text += _reaction_suffix(msg_id, reactions)
                 line_tokens = len(text) // 4 + 1
                 if tokens_used + line_tokens > max_tokens:
                     break
@@ -223,13 +230,7 @@ class StateManager:
             text = (f"[{m['ts']}] #{m.get('topic', '?')} | "
                     f"{m['sender']}: {self._strip_zulip_quotes(m['content'])}")
             msg_id = m.get("msg_id")
-            if reactions and msg_id and msg_id in reactions:
-                rxns = reactions[msg_id]
-                if rxns:
-                    rxn_str = ", ".join(
-                        f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
-                    if rxn_str:
-                        text += f" [{rxn_str}]"
+            text += _reaction_suffix(msg_id, reactions)
             formatted.append(text)
         return "\n".join(formatted)
 
@@ -276,13 +277,7 @@ class StateManager:
                 content = self._strip_zulip_quotes(m.get('content', ''))
                 line = f"[{m['ts']}] {m['sender']}: {content}"
                 msg_id = m.get("msg_id")
-                if reactions and msg_id and msg_id in reactions:
-                    rxns = reactions[msg_id]
-                    if rxns:
-                        rxn_str = ", ".join(
-                            f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
-                        if rxn_str:
-                            line += f" [{rxn_str}]"
+                line += _reaction_suffix(msg_id, reactions)
                 t = len(line) // 4 + 1
                 if max_tokens_per_topic > 0 and topic_tokens + t > max_tokens_per_topic:
                     break
@@ -336,13 +331,7 @@ class StateManager:
                 content = self._strip_zulip_quotes(msg.get('content', ''))
                 text = f"[{msg['ts']}] {msg['sender']}: {content}"
                 msg_id = msg.get("msg_id")
-                if reactions and msg_id and msg_id in reactions:
-                    rxns = reactions[msg_id]
-                    if rxns:
-                        rxn_str = ", ".join(
-                            f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
-                        if rxn_str:
-                            text += f" [{rxn_str}]"
+                text += _reaction_suffix(msg_id, reactions)
                 line_tokens = len(text) // 4 + 1
                 if tokens_used + line_tokens > max_tokens:
                     break
@@ -359,13 +348,7 @@ class StateManager:
                 content = self._strip_zulip_quotes(msg.get('content', ''))
                 text = f"[{msg['ts']}] {msg['sender']}: {content}"
                 msg_id = msg.get("msg_id")
-                if reactions and msg_id and msg_id in reactions:
-                    rxns = reactions[msg_id]
-                    if rxns:
-                        rxn_str = ", ".join(
-                            f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
-                        if rxn_str:
-                            text += f" [{rxn_str}]"
+                text += _reaction_suffix(msg_id, reactions)
                 formatted.append(text)
             except (json.JSONDecodeError, KeyError):
                 continue
