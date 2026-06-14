@@ -217,7 +217,10 @@ def run(resident):
 
     backfill_history(resident)
 
-    ensure_bg_container(resident.state.root)
+    try:
+        ensure_bg_container(resident.state.root)
+    except Exception as e:
+        logger.warning(f"Background container setup failed, continuing without sandbox: {e}")
 
     # Refresh harness copy in state dir
     try:

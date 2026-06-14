@@ -16,34 +16,44 @@ logger = logging.getLogger("sandbox")
 
 
 def ensure_bg_container(state_root: Path) -> bool:
-    """Start the persistent background container if not already running."""
-    check = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", BG_CONTAINER_NAME],
-        capture_output=True, text=True, timeout=10)
-    if check.returncode == 0 and "true" in check.stdout.lower():
-        return True
+    """Start the persistent background container if not already running.
 
-    subprocess.run(
-        ["docker", "rm", "-f", BG_CONTAINER_NAME],
-        capture_output=True, timeout=10)
+    The sandbox is optional infrastructure. A missing, hung, or unresponsive
+    Docker daemon must never take down the resident — any failure here returns
+    False (sandbox unavailable) instead of propagating. Individual sandbox
+    tool calls then fail on their own without crashing the event loop.
+    """
+    try:
+        check = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", BG_CONTAINER_NAME],
+            capture_output=True, text=True, timeout=10)
+        if check.returncode == 0 and "true" in check.stdout.lower():
+            return True
 
-    bg_workspace = state_root / "bg_workspace"
-    bg_workspace.mkdir(exist_ok=True)
+        subprocess.run(
+            ["docker", "rm", "-f", BG_CONTAINER_NAME],
+            capture_output=True, timeout=10)
 
-    result = subprocess.run([
-        "docker", "run", "-d",
-        "--name", BG_CONTAINER_NAME,
-        "--network", "host",
-        "--memory", BG_CONTAINER_MEMORY,
-        "--cpus", "4",
-        "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
-        "-e", f"KAGI_API_KEY={os.environ.get('KAGI_API_KEY', '')}",
-        "-v", f"{bg_workspace}:/workspace",
-        "-v", f"{state_root}:/state:ro",
-        "-w", "/workspace",
-        SANDBOX_IMAGE,
-        "sleep", "infinity",
-    ], capture_output=True, text=True, timeout=30)
+        bg_workspace = state_root / "bg_workspace"
+        bg_workspace.mkdir(exist_ok=True)
+
+        result = subprocess.run([
+            "docker", "run", "-d",
+            "--name", BG_CONTAINER_NAME,
+            "--network", "host",
+            "--memory", BG_CONTAINER_MEMORY,
+            "--cpus", "4",
+            "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
+            "-e", f"KAGI_API_KEY={os.environ.get('KAGI_API_KEY', '')}",
+            "-v", f"{bg_workspace}:/workspace",
+            "-v", f"{state_root}:/state:ro",
+            "-w", "/workspace",
+            SANDBOX_IMAGE,
+            "sleep", "infinity",
+        ], capture_output=True, text=True, timeout=30)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning(f"Docker unavailable, sandbox disabled: {e}")
+        return False
 
     if result.returncode == 0:
         logger.info(f"Started persistent background container: {BG_CONTAINER_NAME}")
