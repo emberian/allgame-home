@@ -119,7 +119,7 @@ def write_state_file(inp: dict, state) -> dict:
 
 def list_state_files(inp: dict, state) -> dict:
     directory = inp.get("directory", "")
-    if ".." in directory:
+    if ".." in directory or directory.startswith("/"):
         return {"content": "Invalid path", "is_error": True}
     target = state.root / directory
     if not target.exists() or not target.is_dir():
@@ -285,7 +285,8 @@ def glob_state_files(inp: dict, state) -> dict:
     pattern = inp.get("pattern", "").strip()
     base = inp.get("directory", "").strip() or ""
 
-    if ".." in pattern or ".." in base:
+    if (".." in pattern or ".." in base
+            or pattern.startswith("/") or base.startswith("/")):
         return {"content": "Invalid path", "is_error": True}
     if not pattern:
         return {"content": "pattern is required (e.g. '**/*.md', "
@@ -341,7 +342,8 @@ def grep_state(inp: dict, state) -> dict:
 
     if not pattern:
         return {"content": "pattern is required", "is_error": True}
-    if ".." in base or ".." in include:
+    if (".." in base or ".." in include
+            or base.startswith("/") or include.startswith("/")):
         return {"content": "Invalid path", "is_error": True}
     if mode not in ("content", "files_with_matches", "count"):
         return {"content": f"Invalid mode: {mode}", "is_error": True}
