@@ -133,7 +133,15 @@ class EngagementJudge:
             self.last_reason = "self-message"
             return False
 
-        # Direct mentions engage — but only in standing streams (or DMs).
+        # DMs always engage. This MUST come before the @-mention check below:
+        # a DM carries stream="dm", which isn't a standing stream, so an
+        # @-mention *inside* a DM would otherwise be caught by the
+        # non-standing-stream rejection and silently dropped.
+        if message.get("type") == "private":
+            self.last_reason = "DM"
+            return True
+
+        # Direct mentions engage — but only in standing streams.
         # @-mentions in unsubscribed streams arrive via Zulip's notification
         # delivery but Claude has no channel history and shouldn't reply there.
         if f"@**{self.bot_name}**" in content or f"@{self.bot_name}" in content:
@@ -142,10 +150,6 @@ class EngagementJudge:
                 return False
             self.last_reason = "direct @-mention"
             self.record_message(stream, is_direct=True)
-            return True
-
-        if message.get("type") == "private":
-            self.last_reason = "DM"
             return True
 
         if stream.lower() in self.standing_streams:
