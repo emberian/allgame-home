@@ -639,10 +639,12 @@ TOOL_DEFINITIONS = [
     {
         "name": "edit_harness",
         "description": (
-            "Modify your own harness source code with git + AST-parse safety. "
-            "Every action checkpoints to git before applying, parse-verifies "
-            "the result (for .py files), rolls back on parse failure, "
-            "commits on success, and triggers an auto-restart.\n\n"
+            "Modify your own harness source code with git + parse + import "
+            "safety. Every action checkpoints to git before applying, then "
+            "verifies the result both parses AND imports cleanly (for .py "
+            "files — an edit that parses but breaks at import is caught too), "
+            "rolls back on failure, commits on success, and triggers an "
+            "auto-restart.\n\n"
             "Actions (selected by `action`):\n"
             "  edit (default) — replace substring(s) in an existing file. "
             "Single edit: pass old_string + new_string. Atomic multi-edit: "

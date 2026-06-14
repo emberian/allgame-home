@@ -23,7 +23,6 @@ BG_CONTAINER_MEMORY = "8g"
 SESSION_TTL = 300  # seconds — matches Anthropic cache TTL
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
 TOPIC_HISTORY_TOKEN_BUDGET = 20_000   # cold-start topic context
-PERSON_NOTES_TOKEN_BUDGET = 8_000     # per-person notes
 
 # Cross-stream context (e.g. #allgame loaded when responding elsewhere).
 # Sliced per-topic instead of one stream-wide tail so every topic gets

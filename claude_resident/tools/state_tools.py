@@ -9,6 +9,14 @@ from claude_resident.util import zulip_upload_file
 
 logger = logging.getLogger("tools.state")
 
+
+def _unsafe_path(*parts: str) -> bool:
+    """True if any path component would escape the state root — a parent ref
+    ('..') or an absolute path (leading '/', which resets state.root/p to '/p').
+    One guard for every path-taking state tool so they can't drift apart (an
+    earlier drift let list/glob/grep be escaped by absolute paths)."""
+    return any(".." in p or p.startswith("/") for p in parts)
+
 # Files where 'replace' and surgical edits are blocked at the tool layer.
 # Currently empty: even the journal can be edited (the model has the judgment
 # to trim history thoughtfully). Add filenames here if a file ever needs to
@@ -93,7 +101,7 @@ def write_state_file(inp: dict, state) -> dict:
     path = inp.get("path", "")
     content = inp.get("content", "")
     action = inp.get("action", "replace")
-    if ".." in path or path.startswith("/"):
+    if _unsafe_path(path):
         return {"content": "Invalid path", "is_error": True}
     if action not in ("replace", "append"):
         return {"content": f"Invalid action: {action}", "is_error": True}
@@ -119,7 +127,7 @@ def write_state_file(inp: dict, state) -> dict:
 
 def list_state_files(inp: dict, state) -> dict:
     directory = inp.get("directory", "")
-    if ".." in directory or directory.startswith("/"):
+    if _unsafe_path(directory):
         return {"content": "Invalid path", "is_error": True}
     target = state.root / directory
     if not target.exists() or not target.is_dir():
@@ -148,7 +156,7 @@ def edit_state_file(inp: dict, state) -> dict:
     already exist.
     """
     path = inp.get("path", "")
-    if ".." in path or path.startswith("/"):
+    if _unsafe_path(path):
         return {"content": "Invalid path", "is_error": True}
 
     edits = inp.get("edits")
@@ -238,7 +246,7 @@ def upload_state_file(inp: dict, state, zulip_client) -> dict:
     upload_sandbox_file instead.
     """
     path = inp.get("path", "")
-    if not path or ".." in path or path.startswith("/"):
+    if not path or _unsafe_path(path):
         return {"content": "Invalid path: must be relative, no '..'",
                 "is_error": True}
 
@@ -285,8 +293,7 @@ def glob_state_files(inp: dict, state) -> dict:
     pattern = inp.get("pattern", "").strip()
     base = inp.get("directory", "").strip() or ""
 
-    if (".." in pattern or ".." in base
-            or pattern.startswith("/") or base.startswith("/")):
+    if _unsafe_path(pattern, base):
         return {"content": "Invalid path", "is_error": True}
     if not pattern:
         return {"content": "pattern is required (e.g. '**/*.md', "
@@ -342,8 +349,7 @@ def grep_state(inp: dict, state) -> dict:
 
     if not pattern:
         return {"content": "pattern is required", "is_error": True}
-    if (".." in base or ".." in include
-            or base.startswith("/") or include.startswith("/")):
+    if _unsafe_path(base, include):
         return {"content": "Invalid path", "is_error": True}
     if mode not in ("content", "files_with_matches", "count"):
         return {"content": f"Invalid mode: {mode}", "is_error": True}
