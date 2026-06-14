@@ -1,6 +1,5 @@
 """Docker sandbox and persistent background container management."""
 
-import os
 import shutil
 import logging
 import shlex
@@ -38,14 +37,17 @@ def ensure_bg_container(state_root: Path) -> bool:
         bg_workspace = state_root / "bg_workspace"
         bg_workspace.mkdir(exist_ok=True)
 
+        # NOTE: credentials are deliberately NOT baked into the container
+        # environment — that left the keys sitting in PID 1's environ for the
+        # container's whole life, readable by any model-authored command. The
+        # one internal consumer (the mirror council) is handed the key on its
+        # own `docker exec` instead. See _run_mirror_council.
         result = subprocess.run([
             "docker", "run", "-d",
             "--name", BG_CONTAINER_NAME,
             "--network", "host",
             "--memory", BG_CONTAINER_MEMORY,
             "--cpus", "4",
-            "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
-            "-e", f"KAGI_API_KEY={os.environ.get('KAGI_API_KEY', '')}",
             "-v", f"{bg_workspace}:/workspace",
             "-v", f"{state_root}:/state:ro",
             "-w", "/workspace",
@@ -70,6 +72,16 @@ def stop_bg_container():
         ["docker", "rm", "-f", BG_CONTAINER_NAME],
         capture_output=True, timeout=10)
     logger.info("Stopped persistent background container")
+
+
+def _combine_stdio(result) -> str:
+    """Combine a completed process's stdout and (labeled) stderr into one
+    string, or '(no output)' when both are empty. Shared by the sandbox and
+    background-container runners."""
+    output = result.stdout or ""
+    if result.stderr:
+        output += ("\n--- stderr ---\n" + result.stderr) if output else result.stderr
+    return output or "(no output)"
 
 
 def run_sandbox(command: str, files: dict[str, str],
@@ -121,7 +133,6 @@ def run_sandbox(command: str, files: dict[str, str],
             "--memory", SANDBOX_MEMORY,
             "--cpus", "2",
             "--pids-limit", "128",
-            "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
             "-v", f"{sandbox_dir}:/workspace",
             "-v", f"{state_root}:/state:ro",
             "-w", "/workspace",
@@ -139,14 +150,7 @@ def run_sandbox(command: str, files: dict[str, str],
             timeout=effective_timeout,
         )
 
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += ("\n--- stderr ---\n" + result.stderr) if output else result.stderr
-        if not output:
-            output = "(no output)"
-
+        output = _combine_stdio(result)
         if result.returncode != 0:
             output += f"\n\n[exit code: {result.returncode}]"
 
@@ -179,8 +183,8 @@ def run_sandbox(command: str, files: dict[str, str],
         return {"content": output}, sandbox_dir
 
     except subprocess.TimeoutExpired:
-        logger.warning(f"Sandbox: command timed out after {SANDBOX_TIMEOUT}s")
-        return {"content": f"Command timed out after {SANDBOX_TIMEOUT}s",
+        logger.warning(f"Sandbox: command timed out after {effective_timeout}s")
+        return {"content": f"Command timed out after {effective_timeout}s",
                 "is_error": True}, sandbox_dir
     except FileNotFoundError:
         return {"content": "Docker not found. Is Docker installed and running?",
@@ -224,13 +228,7 @@ def run_background(command: str, files: dict[str, str],
         result = subprocess.run(exec_cmd, capture_output=True, text=True,
                                 timeout=timeout)
 
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += ("\n--- stderr ---\n" + result.stderr) if output else result.stderr
-        if not output:
-            output = "(no output)"
+        output = _combine_stdio(result)
         if result.returncode != 0:
             output += f"\n\n[exit code: {result.returncode}]"
         if len(output) > 50_000:

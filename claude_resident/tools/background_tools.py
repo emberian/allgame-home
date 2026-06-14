@@ -2,12 +2,14 @@
 
 import json
 import logging
+import os
 import shlex
 import subprocess
 from datetime import datetime, timezone
 
 from claude_resident.config import BG_CONTAINER_NAME
-from claude_resident.sandbox import ensure_bg_container, run_background
+from claude_resident.sandbox import (
+    ensure_bg_container, run_background, _combine_stdio)
 
 logger = logging.getLogger("tools.background")
 
@@ -46,11 +48,7 @@ def query_background_tool(inp: dict, state_root) -> dict:
         result = subprocess.run(
             ["docker", "exec", BG_CONTAINER_NAME, "bash", "-c", cmd],
             capture_output=True, text=True, timeout=15)
-        output = result.stdout or ""
-        if result.stderr:
-            output += ("\n--- stderr ---\n" + result.stderr) if output else result.stderr
-        if not output:
-            output = "(no output)"
+        output = _combine_stdio(result)
         if len(output) > 30_000:
             output = output[:30_000] + "\n\n[truncated at 30k chars]"
         return {"content": output}
@@ -108,8 +106,15 @@ def _run_mirror_council(state, context: str, draft: str,
                "print(council.format_council_log(r)); "
                "print('===FINAL==='); "
                "print(r['final_draft'])\"")
+        # The council is the one internal consumer of the API key; hand it in
+        # per-exec rather than baking it into the container env (see
+        # ensure_bg_container). Model-authored run_background/query commands
+        # therefore never see these credentials.
         check = subprocess.run(
-            ["docker", "exec", BG_CONTAINER_NAME, "bash", "-c", cmd],
+            ["docker", "exec",
+             "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",
+             "-e", f"KAGI_API_KEY={os.environ.get('KAGI_API_KEY', '')}",
+             BG_CONTAINER_NAME, "bash", "-c", cmd],
             capture_output=True, text=True, timeout=180)
         output = check.stdout
         if "===FINAL===" in output:
