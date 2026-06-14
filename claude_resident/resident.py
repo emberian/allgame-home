@@ -12,7 +12,7 @@ import anthropic
 from claude_resident.config import (
     DEFAULT_MODEL, MAX_RESPONSE_TOKENS, THINKING_BUDGET,
     COOLDOWN_SECONDS, MAX_TOOL_TURNS, SESSION_MAX_TOKENS, MAX_STALE_FILES,
-    SESSION_TRIM_PAIRS, TYPING_HOLDOFF_TIMEOUT,
+    SESSION_TRIM_PAIRS, TYPING_HOLDOFF_TIMEOUT, ALLGAME_CORE_FILES,
 )
 from claude_resident.state import StateManager
 from claude_resident.sessions import SessionManager
@@ -176,9 +176,7 @@ class ClaudeResident:
             # (so off-allgame Claude has game context), so they participate
             # in the staleness check universally.
             tier23_keys = {"identity", "scratchpad", "inbox",
-                           "allgame/faction.md",
-                           "allgame/campaign_log.md",
-                           "allgame/strategy.md"}
+                           *(f"allgame/{f}" for f in ALLGAME_CORE_FILES)}
             stale_count = sum(
                 1 for k in tier23_keys
                 if session.state_fingerprints.get(k) != new_fingerprints.get(k))
@@ -743,7 +741,7 @@ class ClaudeResident:
                 sections.append(
                     f'<stream_history stream="{stream}">'
                     f'\n{context}\n</stream_history>')
-        for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+        for fname in ALLGAME_CORE_FILES:
             content = self.state.read_file(f"allgame/{fname}")
             if content:
                 tag = fname.replace('.md', '')
@@ -832,7 +830,7 @@ will be appended to your journal."""
                 f'\n{context}\n</stream_history>')
 
             if stream.lower() == "allgame":
-                for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+                for fname in ALLGAME_CORE_FILES:
                     content = self.state.read_file(f"allgame/{fname}")
                     if content:
                         tag = fname.replace('.md', '')
@@ -948,7 +946,7 @@ Include <state_update> blocks if you want to remember anything."""
         scratchpad = self.state.read_file("scratchpad.md")
         if scratchpad:
             sections.append(f"<scratchpad>\n{scratchpad}\n</scratchpad>")
-        for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+        for fname in ALLGAME_CORE_FILES:
             content = self.state.read_file(f"allgame/{fname}")
             if content:
                 tag = fname.replace('.md', '')

@@ -55,6 +55,11 @@ HARNESS_PATH = HARNESS_DIR / "claude_resident.py"  # legacy shim location
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
+# The allgame "core" state files, loaded into context for every stream so the
+# resident carries game state everywhere. Single source for the load /
+# fingerprint / staleness loops in prompt.py, resident.py, metacog.py, state.py.
+ALLGAME_CORE_FILES = ("faction.md", "campaign_log.md", "strategy.md")
+
 # Streams where Claude has standing interest (will read ambient conversation).
 DEFAULT_STANDING_STREAMS = [
     "allgame",       # the main stream — all topics within it

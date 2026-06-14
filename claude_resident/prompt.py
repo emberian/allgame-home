@@ -8,6 +8,7 @@ from claude_resident.config import (
     STREAM_HISTORY_TOKEN_BUDGET,
     STREAM_MESSAGES_PER_TOPIC,
     STREAM_PER_TOPIC_TOKEN_BUDGET,
+    ALLGAME_CORE_FILES,
 )
 from claude_resident.util import safe_filename
 
@@ -259,7 +260,7 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
     scratchpad = state.read_file("scratchpad.md")
     if scratchpad:
         tier3_parts.append(f"<scratchpad>\n{scratchpad}\n</scratchpad>")
-    for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+    for fname in ALLGAME_CORE_FILES:
         content = state.read_file(f"allgame/{fname}")
         if content:
             tag = fname.replace('.md', '')
@@ -325,7 +326,7 @@ def fingerprint_state(state, stream: str, sender: str) -> dict[str, str]:
             fingerprints[name] = hashlib.md5(content.encode()).hexdigest()
     # Allgame state files are now always loaded into tier 3, so always
     # fingerprint them (regardless of which stream we're responding in).
-    for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+    for fname in ALLGAME_CORE_FILES:
         content = state.read_file(f"allgame/{fname}")
         if content:
             fingerprints[f"allgame/{fname}"] = hashlib.md5(

@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 import anthropic
 
 from claude_resident.config import (
-    DEFAULT_MODEL, SESSION_TTL, MAX_CONTEXT_TOKENS, MAX_RESPONSE_TOKENS,
-    THINKING_BUDGET,
+    SESSION_TTL, MAX_CONTEXT_TOKENS, MAX_RESPONSE_TOKENS,
+    THINKING_BUDGET, ALLGAME_CORE_FILES,
     METACOG_DEBOUNCE_SECONDS, METACOG_CHECK_INTERVAL, METACOG_MAX_TOOL_TURNS,
 )
 from claude_resident.tools.definitions import TOOL_DEFINITIONS
@@ -144,7 +144,7 @@ def build_metacog_context(resident) -> str:
         if content:
             _add(f"<current_{name}>\n{content}\n</current_{name}>")
 
-    for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+    for fname in ALLGAME_CORE_FILES:
         content = state.read_file(f"allgame/{fname}")
         if content:
             tag = fname.replace('.md', '')

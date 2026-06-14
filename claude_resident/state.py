@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from claude_resident.config import ALLGAME_CORE_FILES
 from claude_resident.util import safe_filename
 
 
@@ -381,7 +382,7 @@ class StateManager:
                 f'\n{stream_context}\n</stream_context>')
 
         if stream.lower() == "allgame":
-            for fname in ["faction.md", "campaign_log.md", "strategy.md"]:
+            for fname in ALLGAME_CORE_FILES:
                 content = self.read_file(f"allgame/{fname}")
                 if content:
                     tag = fname.replace('.md', '')
