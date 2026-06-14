@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 logger = logging.getLogger("archive")
@@ -58,7 +59,9 @@ def _trim_archive(state):
     try:
         lines = path.read_text().strip().split("\n")
         if len(lines) > _ARCHIVE_MAX_LINES:
-            path.write_text("\n".join(lines[-_ARCHIVE_TRIM_TO:]) + "\n")
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text("\n".join(lines[-_ARCHIVE_TRIM_TO:]) + "\n")
+            os.replace(tmp, path)
             logger.info(f"Trimmed api_archive.jsonl: {len(lines)} → {_ARCHIVE_TRIM_TO}")
     except Exception:
         pass

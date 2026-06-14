@@ -1,5 +1,6 @@
 """Filesystem-backed memory for persistent context across API calls."""
 
+import os
 import re
 import json
 import logging
@@ -7,6 +8,16 @@ from pathlib import Path
 from typing import Optional
 
 from claude_resident.util import safe_filename
+
+
+def _atomic_write(path: Path, content: str):
+    """Write via a temp file + os.replace so a crash mid-write can't leave the
+    target truncated or half-written (os.replace is atomic on the same fs).
+    Used for the append-only log rewrites where a partial write would corrupt
+    durable history."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content)
+    os.replace(tmp, path)
 
 logger = logging.getLogger("state_manager")
 
@@ -144,7 +155,7 @@ class StateManager:
             return
         lines = path.read_text().strip().split("\n")
         if len(lines) > max_lines:
-            path.write_text("\n".join(lines[-max_lines:]) + "\n")
+            _atomic_write(path, "\n".join(lines[-max_lines:]) + "\n")
 
     # ------------------------------------------------------------------
     # Context retrieval

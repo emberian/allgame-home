@@ -151,54 +151,61 @@ def replay_pending(resident):
     skips re-logging via the msg_index dedup.
     """
     bot_name = resident.judge.bot_name
-    pending = []
+    pending: list[dict] = []
 
-    for stream in resident.judge.standing_streams:
+    def _collect(narrow: list[dict], label: str):
         try:
             result = resident.zulip.get_messages({
                 "anchor": "newest",
                 "num_before": 50,
                 "num_after": 0,
-                "narrow": json.dumps(
-                    [{"operator": "channel", "operand": stream}]),
+                "narrow": json.dumps(narrow),
                 "apply_markdown": False,
             })
             if result.get("result") != "success":
-                continue
-
-            messages = result.get("messages", [])
-            if not messages:
-                continue
-
-            # Group by topic, keep the last message per topic
-            by_topic: dict[str, dict] = {}
-            for msg in messages:
-                topic = msg.get("subject", "")
-                by_topic[topic] = msg
-
-            for topic, last_msg in by_topic.items():
-                sender = last_msg.get("sender_full_name", "").lower()
-                if bot_name in sender:
+                return
+            for msg in result.get("messages", []):
+                if bot_name in msg.get("sender_full_name", "").lower():
                     continue
-                # Durable dedup: skip anything we already handled in a prior
-                # run. This is the real fix for re-responding on restart —
-                # the "last speaker" check above is only a coarse heuristic.
-                if last_msg.get("id") in resident.handled:
+                # Durable dedup: the handled ledger is the source of truth.
+                # Anything not in it was never fully processed (arrived during
+                # downtime, or a crash hit mid-response) and must be replayed.
+                # judge-NO marks a message handled too, so this won't re-run
+                # the judge on messages we already decided to skip.
+                if msg.get("id") in resident.handled:
                     continue
-                pending.append(last_msg)
-
+                pending.append(msg)
         except Exception as e:
-            logger.error(f"Error checking pending in #{stream}: {e}",
+            logger.error(f"Error checking pending in {label}: {e}",
                          exc_info=True)
+
+    for stream in resident.judge.standing_streams:
+        _collect([{"operator": "channel", "operand": stream}], f"#{stream}")
+    # DMs have no other replay path and the judge always engages them, so a
+    # crash mid-DM (or a DM that arrived during downtime) would be lost forever
+    # without this. Replay ALL unhandled messages, not just the last per topic.
+    _collect([{"operator": "is", "operand": "private"}], "DMs")
 
     if not pending:
         logger.info("Replay: no unreplied messages found")
         return
 
-    logger.info(f"Replay: {len(pending)} topics with unreplied messages")
-    for msg in pending:
-        stream = msg.get("display_recipient", "?")
-        topic = msg.get("subject", "?")
+    # A message can match more than one narrow; de-dup by id and replay in
+    # chronological (id-ascending) order so threads are handled in sequence.
+    seen: set = set()
+    ordered: list[dict] = []
+    for msg in sorted(pending, key=lambda m: m.get("id", 0)):
+        mid = msg.get("id")
+        if mid in seen:
+            continue
+        seen.add(mid)
+        ordered.append(msg)
+
+    logger.info(f"Replay: {len(ordered)} unreplied message(s)")
+    for msg in ordered:
+        is_dm = msg.get("type") == "private"
+        stream = "dm" if is_dm else msg.get("display_recipient", "?")
+        topic = msg.get("sender_email", "?") if is_dm else msg.get("subject", "?")
         sender = msg.get("sender_full_name", "?")
         logger.info(f"Replay: #{stream}>{topic} from {sender}")
         try:
@@ -296,14 +303,24 @@ def run(resident):
                     continue
 
                 for event in events.get("events", []):
-                    last_event_id = max(last_event_id, event["id"])
-
-                    if event.get("type") == "message":
-                        resident.handle_message(event["message"])
-                    elif event.get("type") == "reaction":
-                        resident._handle_reaction_event(event)
-                    elif event.get("type") == "typing":
-                        resident._handle_typing_event(event)
+                    # Isolate each event: a failure handling one must not abort
+                    # the rest of the batch (which would otherwise re-fetch and
+                    # risk re-processing). Advance last_event_id in finally so a
+                    # poison event can't loop, while the handled ledger + replay
+                    # still backstop anything dropped by a hard crash.
+                    try:
+                        if event.get("type") == "message":
+                            resident.handle_message(event["message"])
+                        elif event.get("type") == "reaction":
+                            resident._handle_reaction_event(event)
+                        elif event.get("type") == "typing":
+                            resident._handle_typing_event(event)
+                    except Exception as e:
+                        logger.error(
+                            f"Error handling event {event.get('id')} "
+                            f"(type={event.get('type')}): {e}", exc_info=True)
+                    finally:
+                        last_event_id = max(last_event_id, event["id"])
 
                 if resident._restart_requested:
                     logger.info(
