@@ -475,17 +475,23 @@ class ClaudeResident:
             {"type": "adaptive"} if "opus" in self.model
             else {"type": "enabled", "budget_tokens": THINKING_BUDGET})
 
+        def _create():
+            # One definition for the model call so the initial attempt and the
+            # trim/529 retries below can never drift apart. Reads session.messages
+            # fresh each call (it's mutated in place by trimming).
+            return self.anthropic.messages.create(
+                model=self.model,
+                max_tokens=MAX_RESPONSE_TOKENS,
+                thinking=thinking_param,
+                system=system,
+                tools=TOOL_DEFINITIONS,
+                messages=session.messages,
+            )
+
         try:
             for turn in range(MAX_TOOL_TURNS):
                 try:
-                    response = self.anthropic.messages.create(
-                        model=self.model,
-                        max_tokens=MAX_RESPONSE_TOKENS,
-                        thinking=thinking_param,
-                        system=system,
-                        tools=TOOL_DEFINITIONS,
-                        messages=session.messages,
-                    )
+                    response = _create()
                 except anthropic.BadRequestError as e:
                     if "prompt is too long" in str(e):
                         self.logger.warning(
@@ -493,14 +499,7 @@ class ClaudeResident:
                         _trim_session(session, self.logger)
                         if turn == 0:
                             try:
-                                response = self.anthropic.messages.create(
-                                    model=self.model,
-                                    max_tokens=MAX_RESPONSE_TOKENS,
-                                    thinking=thinking_param,
-                                    system=system,
-                                    tools=TOOL_DEFINITIONS,
-                                    messages=session.messages,
-                                )
+                                response = _create()
                             except anthropic.APIError as e2:
                                 self.logger.error(
                                     f"Still too long after trim: {e2}")
@@ -520,14 +519,7 @@ class ClaudeResident:
                                 f"retry {attempt+1}/3 in {wait}s")
                             time.sleep(wait)
                             try:
-                                response = self.anthropic.messages.create(
-                                    model=self.model,
-                                    max_tokens=MAX_RESPONSE_TOKENS,
-                                    thinking=thinking_param,
-                                    system=system,
-                                    tools=TOOL_DEFINITIONS,
-                                    messages=session.messages,
-                                )
+                                response = _create()
                                 break
                             except anthropic.APIError as e2:
                                 if e2.status_code != 529 or attempt == 2:
