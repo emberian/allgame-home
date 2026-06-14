@@ -165,6 +165,15 @@ def build_metacog_context(resident) -> str:
     streams = resident.judge.standing_streams
     per_stream_budget = history_budget // max(len(streams), 1)
 
+    # If state context already fills the window, there is NO room for channel
+    # history. Skip it — passing a non-positive budget down would otherwise hit
+    # the n-based default and dump ~100 msgs/stream exactly when tightest.
+    if per_stream_budget <= 0:
+        logger.warning(
+            f"Metacog: state context fills the window "
+            f"(history_budget={history_budget}); skipping channel history")
+        streams = []
+
     for stream in streams:
         context = state.get_recent_stream_context(
             stream, max_tokens=per_stream_budget,

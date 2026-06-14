@@ -163,6 +163,11 @@ class StateManager:
     def get_recent_stream_context(self, stream: str, n: int = 100,
                                   reactions: dict[int, dict[str, int]] | None = None,
                                   max_tokens: int = 0) -> str:
+        # max_tokens == 0 means "no explicit budget, use n". A negative budget
+        # means the caller has no room left — it must never fall through to the
+        # n-based default (which would return MORE, not less).
+        if max_tokens < 0:
+            return ""
         safe_stream = safe_filename(stream)
         stream_dir = self.root / f"channels/{safe_stream}"
         if not stream_dir.exists():
