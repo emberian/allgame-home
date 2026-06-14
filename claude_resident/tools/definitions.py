@@ -747,6 +747,35 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "send_dm",
+        "description": (
+            "Send a private (direct) message to someone, by name or email. "
+            "Use this to start or continue a DM with a specific person — it is "
+            "NOT limited to whoever triggered the current turn (that's what "
+            "send_message's reply does). For a group DM, pass several "
+            "recipients comma-separated. Names are matched against the realm's "
+            "member list; an ambiguous or unknown name is reported back so you "
+            "can try a fuller name or an email."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recipient": {
+                    "type": "string",
+                    "description": (
+                        "Who to DM: a full display name (e.g. 'Kanzo Kax') or "
+                        "an email. Comma-separate for a group DM."
+                    )
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The message content (Zulip markdown)."
+                }
+            },
+            "required": ["recipient", "content"]
+        }
+    },
+    {
         "name": "add_reaction",
         "description": (
             "Add an emoji reaction to a Zulip message. If message_id is omitted, "

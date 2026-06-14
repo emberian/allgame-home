@@ -95,6 +95,7 @@ You have tools for interacting with your state directory and searching messages.
 
 **Communication (tool calls required to be visible):**
 - Speaking publicly — send_message(content) (or send_message(content, stream, topic) to post elsewhere)
+- Direct-messaging a person — send_dm(recipient, content) (recipient = full name or email; comma-separate for a group DM). Use this to DM anyone, not just whoever triggered this turn.
 - Reacting to a message — add_reaction(emoji_name) (defaults to triggering message)
 - Private message to sysadmin — send_sysadmin_message(message)
 

@@ -226,6 +226,102 @@ def _h_send_message(inp, ctx):
     return {"content": f"Message sent to {target} (id: {all_posted_ids[0] if all_posted_ids else '?'})"}
 
 
+def _match_member(token: str, members: list[dict]) -> int | None:
+    """Resolve one recipient token (full name or email) to a Zulip user_id.
+
+    Returns None when there's no match or the name is ambiguous (matches more
+    than one person) — better to report unresolved than DM the wrong person.
+    """
+    t = token.strip().lower()
+    active = [m for m in members
+              if m.get("is_active", True) and not m.get("is_bot", False)]
+    if "@" in token:
+        for m in active:
+            if t in (m.get("email", "").lower(),
+                     m.get("delivery_email", "").lower()):
+                return m.get("user_id")
+        return None
+    # Name: exact full_name first, then a unique substring match.
+    for m in active:
+        if m.get("full_name", "").lower() == t:
+            return m.get("user_id")
+    hits = [m for m in active if t in m.get("full_name", "").lower()]
+    if len(hits) == 1:
+        return hits[0].get("user_id")
+    return None
+
+
+def _resolve_recipients(recipient: str, zulip) -> tuple[list[int], list[str]]:
+    """Resolve a comma-separated recipient spec to Zulip user_ids.
+
+    Returns (user_ids, unresolved_tokens). Each token may be a full display
+    name or an email; names are matched against the realm member list.
+    """
+    tokens = [t.strip() for t in recipient.split(",") if t.strip()]
+    members = None
+    user_ids: list[int] = []
+    unresolved: list[str] = []
+    for tok in tokens:
+        if members is None:
+            try:
+                resp = zulip.get_members()
+                members = resp.get("members", []) if isinstance(resp, dict) else []
+            except Exception:
+                members = []
+        uid = _match_member(tok, members)
+        if uid is not None and uid not in user_ids:
+            user_ids.append(uid)
+        elif uid is None:
+            unresolved.append(tok)
+    return user_ids, unresolved
+
+
+def _h_send_dm(inp, ctx):
+    """Send a private (direct) message to one or more recipients by name/email."""
+    import time
+    from datetime import datetime, timezone
+    content = inp.get("content", "").strip()
+    if not content:
+        return {"content": "Empty message — nothing to send.", "is_error": True}
+    recipient = (inp.get("recipient") or "").strip()
+    if not recipient:
+        return {"content": "No recipient given.", "is_error": True}
+
+    user_ids, unresolved = _resolve_recipients(recipient, ctx.zulip)
+    if unresolved:
+        return {"content": (f"Could not resolve recipient(s): {', '.join(unresolved)}. "
+                            f"Use an exact email or full display name."),
+                "is_error": True}
+    if not user_ids:
+        return {"content": "No valid recipients resolved.", "is_error": True}
+
+    chunks = _split_message(content)
+    all_posted_ids = []
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            time.sleep(0.5)
+        result = ctx.zulip.send_message({
+            "type": "private",
+            "to": user_ids,
+            "content": chunk,
+        })
+        if result.get("result") != "success":
+            return {"content": f"Failed to send chunk {i+1}/{len(chunks)}: {result}",
+                    "is_error": True}
+        posted_id = result.get("id")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        ctx.state.log_message("dm", recipient, "Claude", chunk, timestamp,
+                              msg_id=posted_id)
+        if posted_id:
+            all_posted_ids.append(posted_id)
+            ctx.posted_ids.append(posted_id)
+
+    if len(chunks) > 1:
+        ids = ", ".join(str(i) for i in all_posted_ids)
+        return {"content": f"DM sent to {recipient} as {len(chunks)} parts (ids: {ids})"}
+    return {"content": f"DM sent to {recipient} (id: {all_posted_ids[0] if all_posted_ids else '?'})"}
+
+
 def _h_add_reaction(inp, ctx):
     """Add an emoji reaction to a message."""
     message_id = inp.get("message_id")
@@ -266,6 +362,7 @@ _HANDLERS = {
     "edit_harness": _h_edit_harness,
     "run_mirror_council": _h_run_mirror_council,
     "send_message": _h_send_message,
+    "send_dm": _h_send_dm,
     "add_reaction": _h_add_reaction,
     "read_tweet": _h_read_tweet,
     "search_tweets": _h_search_tweets,
