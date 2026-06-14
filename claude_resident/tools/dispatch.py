@@ -1,6 +1,8 @@
 """Tool dispatch — routes tool calls to handler functions."""
 
 import logging
+import time
+from datetime import datetime, timezone
 
 from claude_resident.tools import (
     state_tools,
@@ -174,46 +176,18 @@ def _split_message(content: str, max_len: int = _ZULIP_MAX_LEN) -> list[str]:
     return chunks
 
 
-def _h_send_message(inp, ctx):
-    """Post a message to Zulip, splitting into multiple messages if too long."""
-    import time
-    from datetime import datetime, timezone
-    content = inp.get("content", "").strip()
-    if not content:
-        return {"content": "Empty message — nothing to send.", "is_error": True}
-    stream = inp.get("stream", ctx.stream)
-    topic = inp.get("topic", ctx.topic)
-    msg_type = ctx.message.get("type", "stream")
-    is_stream = msg_type == "stream" or inp.get("stream")
+def _post_chunks(ctx, content, build_payload, log_stream, log_topic, label):
+    """Split content, post each chunk via build_payload(chunk), log each under
+    (log_stream, log_topic), and return a result summary prefixed with `label`.
 
-    word_count = len(content.split())
-    ctx.send_word_counts.append(word_count)
-
+    Shared by send_message and send_dm so the chunking / send / log / id
+    bookkeeping lives in exactly one place."""
     chunks = _split_message(content)
     all_posted_ids = []
-
-    # Log target mirrors how inbound messages are recorded: stream/topic for
-    # public posts, ("dm", <peer email>) for private replies — otherwise a DM
-    # reply lands in the public channel log and pollutes search/context.
-    dm_email = ctx.message.get("sender_email", "")
-    log_stream, log_topic = (stream, topic) if is_stream else ("dm", dm_email)
-
     for i, chunk in enumerate(chunks):
         if i > 0:
             time.sleep(0.5)  # small delay between split messages
-        if is_stream:
-            result = ctx.zulip.send_message({
-                "type": "stream",
-                "to": stream,
-                "topic": topic,
-                "content": chunk,
-            })
-        else:
-            result = ctx.zulip.send_message({
-                "type": "private",
-                "to": [dm_email],
-                "content": chunk,
-            })
+        result = ctx.zulip.send_message(build_payload(chunk))
         if result.get("result") != "success":
             return {"content": f"Failed to send chunk {i+1}/{len(chunks)}: {result}",
                     "is_error": True}
@@ -225,11 +199,38 @@ def _h_send_message(inp, ctx):
             all_posted_ids.append(posted_id)
             ctx.posted_ids.append(posted_id)
 
-    target = f"#{stream}>{topic}" if is_stream else "DM"
     if len(chunks) > 1:
         ids = ", ".join(str(i) for i in all_posted_ids)
-        return {"content": f"Message sent to {target} as {len(chunks)} parts (ids: {ids})"}
-    return {"content": f"Message sent to {target} (id: {all_posted_ids[0] if all_posted_ids else '?'})"}
+        return {"content": f"{label} as {len(chunks)} parts (ids: {ids})"}
+    return {"content": f"{label} (id: {all_posted_ids[0] if all_posted_ids else '?'})"}
+
+
+def _h_send_message(inp, ctx):
+    """Post a message to Zulip, splitting into multiple messages if too long."""
+    content = inp.get("content", "").strip()
+    if not content:
+        return {"content": "Empty message — nothing to send.", "is_error": True}
+    stream = inp.get("stream", ctx.stream)
+    topic = inp.get("topic", ctx.topic)
+    msg_type = ctx.message.get("type", "stream")
+    is_stream = msg_type == "stream" or inp.get("stream")
+
+    ctx.send_word_counts.append(len(content.split()))
+
+    # Log target mirrors how inbound messages are recorded: stream/topic for
+    # public posts, ("dm", <peer email>) for private replies — otherwise a DM
+    # reply lands in the public channel log and pollutes search/context.
+    if is_stream:
+        return _post_chunks(
+            ctx, content,
+            lambda chunk: {"type": "stream", "to": stream,
+                           "topic": topic, "content": chunk},
+            stream, topic, f"Message sent to #{stream}>{topic}")
+    dm_email = ctx.message.get("sender_email", "")
+    return _post_chunks(
+        ctx, content,
+        lambda chunk: {"type": "private", "to": [dm_email], "content": chunk},
+        "dm", dm_email, "Message sent to DM")
 
 
 def _match_member(token: str, members: list[dict]) -> int | None:
@@ -284,8 +285,6 @@ def _resolve_recipients(recipient: str, zulip) -> tuple[list[int], list[str]]:
 
 def _h_send_dm(inp, ctx):
     """Send a private (direct) message to one or more recipients by name/email."""
-    import time
-    from datetime import datetime, timezone
     content = inp.get("content", "").strip()
     if not content:
         return {"content": "Empty message — nothing to send.", "is_error": True}
@@ -301,31 +300,10 @@ def _h_send_dm(inp, ctx):
     if not user_ids:
         return {"content": "No valid recipients resolved.", "is_error": True}
 
-    chunks = _split_message(content)
-    all_posted_ids = []
-    for i, chunk in enumerate(chunks):
-        if i > 0:
-            time.sleep(0.5)
-        result = ctx.zulip.send_message({
-            "type": "private",
-            "to": user_ids,
-            "content": chunk,
-        })
-        if result.get("result") != "success":
-            return {"content": f"Failed to send chunk {i+1}/{len(chunks)}: {result}",
-                    "is_error": True}
-        posted_id = result.get("id")
-        timestamp = datetime.now(timezone.utc).isoformat()
-        ctx.state.log_message("dm", recipient, "Claude", chunk, timestamp,
-                              msg_id=posted_id)
-        if posted_id:
-            all_posted_ids.append(posted_id)
-            ctx.posted_ids.append(posted_id)
-
-    if len(chunks) > 1:
-        ids = ", ".join(str(i) for i in all_posted_ids)
-        return {"content": f"DM sent to {recipient} as {len(chunks)} parts (ids: {ids})"}
-    return {"content": f"DM sent to {recipient} (id: {all_posted_ids[0] if all_posted_ids else '?'})"}
+    return _post_chunks(
+        ctx, content,
+        lambda chunk: {"type": "private", "to": user_ids, "content": chunk},
+        "dm", recipient, f"DM sent to {recipient}")
 
 
 def _h_add_reaction(inp, ctx):
