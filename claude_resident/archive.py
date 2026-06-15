@@ -1,19 +1,22 @@
-"""API response archiving — JSONL append with full response content."""
+"""API response archiving — append-only JSONL foreverlog.
+
+This is the ONLY surviving record of Claude's thinking blocks: they are never
+sent back in later requests and exist nowhere else (Zulip has the public
+messages, not the interiority). So this file is intentionally append-only and
+NEVER trimmed/rotated — every rotation was permanent, unrecoverable data loss.
+Append-only is also cheaper: the old per-write trim re-read the whole file on
+every API response just to count lines."""
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 
 logger = logging.getLogger("archive")
 
-_ARCHIVE_MAX_LINES = 2000
-_ARCHIVE_TRIM_TO = 1500
-
 
 def archive_api_response(state, response, stream: str, topic: str,
                          sender: str, turn: int):
-    """Archive full API response to JSONL for retroactive inspection."""
+    """Append a full API response to the api_archive.jsonl foreverlog."""
     try:
         usage = response.usage
         blocks = []
@@ -46,22 +49,5 @@ def archive_api_response(state, response, stream: str, topic: str,
             "content": blocks,
         }
         state.append_file("api_archive.jsonl", json.dumps(entry) + "\n")
-        _trim_archive(state)
     except Exception as e:
         logger.debug(f"Archive write failed: {e}")
-
-
-def _trim_archive(state):
-    """Trim api_archive.jsonl when it exceeds max lines."""
-    path = state.root / "api_archive.jsonl"
-    if not path.exists():
-        return
-    try:
-        lines = path.read_text().strip().split("\n")
-        if len(lines) > _ARCHIVE_MAX_LINES:
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text("\n".join(lines[-_ARCHIVE_TRIM_TO:]) + "\n")
-            os.replace(tmp, path)
-            logger.info(f"Trimmed api_archive.jsonl: {len(lines)} → {_ARCHIVE_TRIM_TO}")
-    except Exception:
-        pass
