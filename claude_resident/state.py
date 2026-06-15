@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from claude_resident.config import ALLGAME_CORE_FILES
+from claude_resident.config import ALLGAME_CORE_FILES, CROSSTOPIC_FILE
 from claude_resident.util import safe_filename
 
 
@@ -75,6 +75,12 @@ class StateManager:
         self._init_file("sysadmin_inbox.md",
                         "# Sysadmin Inbox\n\n_Directives and messages from Ember. "
                         "Loaded into your context automatically._\n\n")
+        self._init_file(CROSSTOPIC_FILE,
+                        "# Cross-topic board\n\n_Your self-mailbox. Notes you jot "
+                        "here are visible to you in EVERY topic, and propagate to "
+                        "your other live topics as context updates. Use it for "
+                        "things mentioned in one room that should be known across "
+                        "the campaign — decisions, facts, OOC asides._\n\n")
 
         # Copy package source into state so the resident can see its own body
         self._copy_harness_source()

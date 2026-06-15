@@ -71,6 +71,9 @@ def _h_glob_state_files(inp, ctx):
 def _h_grep_state(inp, ctx):
     return state_tools.grep_state(inp, ctx.state)
 
+def _h_note_crosstopic(inp, ctx):
+    return state_tools.note_crosstopic(inp, ctx.state)
+
 def _h_upload_state_file(inp, ctx):
     return state_tools.upload_state_file(inp, ctx.state, ctx.zulip)
 
@@ -332,6 +335,7 @@ _HANDLERS = {
     "list_state_files": _h_list_state_files,
     "glob_state_files": _h_glob_state_files,
     "grep_state": _h_grep_state,
+    "note_crosstopic": _h_note_crosstopic,
     "upload_state_file": _h_upload_state_file,
     "search_messages": _h_search_messages,
     "search_zulip_history": _h_search_zulip_history,

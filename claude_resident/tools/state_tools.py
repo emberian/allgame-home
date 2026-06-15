@@ -4,7 +4,10 @@ import base64
 import fnmatch
 import logging
 import re
+from datetime import datetime, timezone
 
+from claude_resident.config import CROSSTOPIC_FILE, CROSSTOPIC_MAX_ENTRIES
+from claude_resident.state import _atomic_write
 from claude_resident.util import zulip_upload_file
 
 logger = logging.getLogger("tools.state")
@@ -16,6 +19,40 @@ def _unsafe_path(*parts: str) -> bool:
     One guard for every path-taking state tool so they can't drift apart (an
     earlier drift let list/glob/grep be escaped by absolute paths)."""
     return any(".." in p or p.startswith("/") for p in parts)
+
+
+def note_crosstopic(inp: dict, state) -> dict:
+    """Append a note to Claude's cross-topic board (self-mailbox).
+
+    The board is loaded into every topic's context and wired into the
+    fingerprint/delta path, so the note propagates to other live topics as a
+    <context_updates> injection on their next turn. Bounded to the most recent
+    CROSSTOPIC_MAX_ENTRIES bullets so a file loaded everywhere can't bloat."""
+    note = (inp.get("note") or "").strip()
+    if not note:
+        return {"content": "Empty note — nothing recorded.", "is_error": True}
+
+    path = state.root / CROSSTOPIC_FILE
+    existing = path.read_text() if path.exists() else "# Cross-topic board\n\n"
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    # Collapse internal newlines so each note is one self-contained bullet.
+    bullet = f"- [{ts} UTC] " + " ".join(note.split())
+    text = existing.rstrip("\n") + "\n" + bullet + "\n"
+
+    # Trim to header + most recent N bullets.
+    lines = text.split("\n")
+    bullets = [i for i, l in enumerate(lines) if l.startswith("- [")]
+    if len(bullets) > CROSSTOPIC_MAX_ENTRIES:
+        header = lines[:bullets[0]]
+        kept = lines[bullets[-CROSSTOPIC_MAX_ENTRIES]:]
+        text = "\n".join(header + kept)
+        if not text.endswith("\n"):
+            text += "\n"
+    _atomic_write(path, text)
+
+    return {"content": ("Noted to your cross-topic board — visible to you in "
+                        "every topic, and pushed to your other live topics as a "
+                        "context update on their next turn.")}
 
 # Files where 'replace' and surgical edits are blocked at the tool layer.
 # Currently empty: even the journal can be edited (the model has the judgment

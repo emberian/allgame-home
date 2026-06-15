@@ -80,6 +80,15 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 # fingerprint / staleness loops in prompt.py, resident.py, metacog.py, state.py.
 ALLGAME_CORE_FILES = ("faction.md", "campaign_log.md", "strategy.md")
 
+# Claude's cross-topic board ("self-mailbox"): a single statefile loaded into
+# every topic's context AND wired into the fingerprint/delta path, so a note
+# Claude jots while in one topic propagates to its other live topics as an
+# explicit <context_updates> injection on their next turn. This is how
+# cross-topic knowledge (incl. OOC asides mentioned in one room but meant to be
+# known everywhere) travels — deliberately written, not scraped from raw history.
+CROSSTOPIC_FILE = "crosstopic.md"
+CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
+
 # Streams where Claude has standing interest (will read ambient conversation).
 DEFAULT_STANDING_STREAMS = [
     "allgame",       # the main stream — all topics within it

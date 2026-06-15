@@ -249,6 +249,34 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "note_crosstopic",
+        "description": (
+            "Jot a note to your cross-topic board (your self-mailbox). Each "
+            "topic is a separate conversation and you do NOT see other topics' "
+            "live messages — so when something said in THIS topic should be "
+            "known in your OTHER topics (a decision, a fact, an OOC aside people "
+            "expect you to remember campaign-wide), record it here. The board is "
+            "loaded into every topic's context, and the note is pushed to your "
+            "other live topics as a context update on their next turn. Keep each "
+            "note a single self-contained fact; the board keeps the most recent "
+            "entries. For your private working memory (not cross-topic), use the "
+            "scratchpad instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "note": {
+                    "type": "string",
+                    "description": (
+                        "The thing to remember across topics — one concise, "
+                        "self-contained fact or decision."
+                    )
+                }
+            },
+            "required": ["note"]
+        }
+    },
+    {
         "name": "search_messages",
         "description": (
             "Search your local message logs. Returns messages from the "

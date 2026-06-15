@@ -10,6 +10,7 @@ from claude_resident.config import (
     STREAM_PER_TOPIC_TOKEN_BUDGET,
     ALLGAME_CORE_FILES,
     CACHE_TTL,
+    CROSSTOPIC_FILE,
 )
 from claude_resident.util import safe_filename
 
@@ -90,6 +91,12 @@ You have tools for interacting with your state directory and searching messages.
 - Notes on the person who messaged you (if they exist)
 - Allgame core state — faction.md, campaign_log.md, strategy.md — loaded
   for every stream so you carry game context into tavern/gemmazone/DMs
+- Your cross-topic board (crosstopic.md) — your self-mailbox, loaded in EVERY
+  topic. This is how you carry knowledge BETWEEN topics: each topic is its own
+  conversation and you don't see other topics' live messages, so when something
+  said in one room should be known elsewhere (a decision, a fact, an OOC aside
+  someone expects you to remember campaign-wide), jot it to the board with
+  note_crosstopic. It propagates to your other live topics as a context update.
 - When responding outside #allgame: ~75 recent messages from EACH topic
   in #allgame (capped per-topic to keep one chatty topic from dominating),
   labeled in <topic name="..."> sections so you can tell where each
@@ -262,6 +269,10 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
     scratchpad = state.read_file("scratchpad.md")
     if scratchpad:
         tier3_parts.append(f"<scratchpad>\n{scratchpad}\n</scratchpad>")
+    crosstopic = state.read_file(CROSSTOPIC_FILE)
+    if crosstopic:
+        tier3_parts.append(
+            f"<crosstopic_board>\n{crosstopic}\n</crosstopic_board>")
     for fname in ALLGAME_CORE_FILES:
         content = state.read_file(f"allgame/{fname}")
         if content:
@@ -322,7 +333,8 @@ def fingerprint_state(state, stream: str, sender: str) -> dict[str, str]:
     fingerprints = {}
     for name, path in [("identity", "identity.md"),
                        ("scratchpad", "scratchpad.md"),
-                       ("inbox", "sysadmin_inbox.md")]:
+                       ("inbox", "sysadmin_inbox.md"),
+                       ("crosstopic", CROSSTOPIC_FILE)]:
         content = state.read_file(path)
         if content:
             fingerprints[name] = hashlib.md5(content.encode()).hexdigest()
@@ -350,6 +362,7 @@ def compute_state_deltas(state, session, new_fingerprints: dict[str, str],
         "identity": "identity.md",
         "scratchpad": "scratchpad.md",
         "inbox": "sysadmin_inbox.md",
+        "crosstopic": CROSSTOPIC_FILE,
     }
     for key, new_hash in new_fingerprints.items():
         if old.get(key) != new_hash:
