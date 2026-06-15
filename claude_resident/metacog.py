@@ -10,7 +10,7 @@ import anthropic
 
 from claude_resident.config import (
     SESSION_TTL, MAX_CONTEXT_TOKENS, MAX_RESPONSE_TOKENS,
-    THINKING_BUDGET, ALLGAME_CORE_FILES,
+    THINKING_BUDGET, ALLGAME_CORE_FILES, CACHE_TTL,
     METACOG_DEBOUNCE_SECONDS, METACOG_CHECK_INTERVAL, METACOG_MAX_TOOL_TURNS,
 )
 from claude_resident.tools.definitions import TOOL_DEFINITIONS
@@ -200,12 +200,12 @@ def run_metacog(resident):
         {
             "type": "text",
             "text": METACOG_SYSTEM_PROMPT,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL},
         },
         {
             "type": "text",
             "text": context,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL},
         },
     ]
 
@@ -284,7 +284,7 @@ def run_metacog(resident):
                         if isinstance(block, dict):
                             block.pop("cache_control", None)
             if tool_results:
-                tool_results[-1]["cache_control"] = {"type": "ephemeral"}
+                tool_results[-1]["cache_control"] = {"type": "ephemeral", "ttl": CACHE_TTL}
             messages.append({"role": "user", "content": tool_results})
         else:
             logger.warning(

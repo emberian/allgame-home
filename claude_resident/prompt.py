@@ -9,6 +9,7 @@ from claude_resident.config import (
     STREAM_MESSAGES_PER_TOPIC,
     STREAM_PER_TOPIC_TOKEN_BUDGET,
     ALLGAME_CORE_FILES,
+    CACHE_TTL,
 )
 from claude_resident.util import safe_filename
 
@@ -236,7 +237,7 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
     blocks.append({
         "type": "text",
         "text": tier1_text,
-        "cache_control": {"type": "ephemeral"},
+        "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL},
     })
 
     # Tier 2: identity + inbox (session-stable)
@@ -251,7 +252,7 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
         blocks.append({
             "type": "text",
             "text": "\n\n".join(tier2_parts),
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL},
         })
 
     # Tier 3: scratchpad + allgame state (slow-changing). Allgame state is
@@ -271,7 +272,7 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
         blocks.append({
             "type": "text",
             "text": "\n\n".join(tier3_parts),
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL},
         })
 
     # Tier 4: topic history + person notes (+ cross-stream allgame when
@@ -384,11 +385,11 @@ def set_last_user_cache_control(messages: list[dict]):
             if isinstance(content, list) and content:
                 last_block = content[-1]
                 if isinstance(last_block, dict):
-                    last_block["cache_control"] = {"type": "ephemeral"}
+                    last_block["cache_control"] = {"type": "ephemeral", "ttl": CACHE_TTL}
             elif isinstance(content, str):
                 messages[i]["content"] = [{
                     "type": "text", "text": content,
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL},
                 }]
             break
 

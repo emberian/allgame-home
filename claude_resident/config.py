@@ -6,8 +6,19 @@ DEFAULT_STATE_DIR = Path.home() / "claude_state"
 DEFAULT_MODEL = "us.anthropic.claude-opus-4-6-v1"
 
 # Anthropic beta headers attached to every API call (via default_headers on
-# the Bedrock client). Empty list = standard 200k window.
-ANTHROPIC_BETAS: list[str] = []
+# the Bedrock client). extended-cache-ttl enables the 1-hour prompt-cache TTL
+# used by CACHE_TTL below; if Bedrock/the model doesn't honor it, it silently
+# falls back to the 5-minute cache (no breakage). To revert caching changes
+# entirely: set this back to [] and CACHE_TTL = "5m".
+ANTHROPIC_BETAS: list[str] = ["extended-cache-ttl-2025-04-11"]
+
+# Prompt-cache lifetime for the stable prefix (system tiers + conversation
+# tail). "1h" keeps a topic's cached prefix warm across the intermittent gaps
+# typical of ambient chat, instead of re-writing it every time the topic wakes
+# after 5 minutes idle — cache *creation* was the single biggest cost line.
+# Must move together with SESSION_TTL (a session torn down before the cache
+# expires re-writes the whole prefix on its cold-start rebuild). "5m" | "1h".
+CACHE_TTL = "1h"
 
 MAX_CONTEXT_TOKENS = 180_000  # leave headroom in 200k window
 MAX_RESPONSE_TOKENS = 16000   # raising further requires streaming (SDK rejects
@@ -20,7 +31,17 @@ SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
 BG_CONTAINER_NAME = "claude-bg"
 BG_CONTAINER_MEMORY = "8g"
-SESSION_TTL = 300  # seconds — matches Anthropic cache TTL
+SESSION_TTL = 3600  # seconds — kept in lockstep with CACHE_TTL (1h). A session
+                    # must not outlive its prompt cache: if it did, the first
+                    # message after the cache expired would re-write the whole
+                    # frozen prefix (incl. the big cold-start tier-4 context) as
+                    # a fresh cache-creation. Holding the session for the full
+                    # cache lifetime lets an intermittently-active topic reuse
+                    # one warm cache instead of paying repeated cold starts.
+                    # (Mid-session state edits still propagate via the
+                    # fingerprint/delta path; >MAX_STALE_FILES divergence resets
+                    # the session. Cross-stream allgame context in tier 4 is the
+                    # one thing frozen for up to the hour.)
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
 TOPIC_HISTORY_TOKEN_BUDGET = 20_000   # cold-start topic context
 
