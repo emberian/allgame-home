@@ -21,6 +21,7 @@ from claude_resident.handled import HandledSet
 from claude_resident.reactions import emoji_display, handle_reaction_event
 from claude_resident.prompt import (
     SYSTEM_PROMPT,
+    allgame_context_files,
     build_tiered_system_prompt,
     fingerprint_state,
     compute_state_deltas,
@@ -166,17 +167,19 @@ class ClaudeResident:
             session = self.sessions.create(stream, topic)
         session.touch()
         session.message_count += 1
+        session.participants.add(sender)
 
         # --- Fingerprint current state ---
         new_fingerprints = fingerprint_state(self.state, stream, sender)
 
         # --- Staleness check ---
         if not is_first_message:
-            # Allgame files are loaded into tier 3 for every stream now
-            # (so off-allgame Claude has game context), so they participate
-            # in the staleness check universally.
+            # Core identity files plus whatever allgame set is loaded for
+            # THIS stream (full core in #allgame, digest/lite elsewhere).
+            # Delta-only files (crosstopic, journal tail, postmark) are
+            # excluded — they churn by design and shouldn't reset sessions.
             tier23_keys = {"identity", "scratchpad", "inbox",
-                           *(f"allgame/{f}" for f in ALLGAME_CORE_FILES)}
+                           *allgame_context_files(self.state, stream)}
             stale_count = sum(
                 1 for k in tier23_keys
                 if session.state_fingerprints.get(k) != new_fingerprints.get(k))
@@ -187,6 +190,7 @@ class ClaudeResident:
                 session = self.sessions.create(stream, topic)
                 session.touch()
                 session.message_count = 1
+                session.participants.add(sender)
                 is_first_message = True
 
         # --- Build system prompt ---

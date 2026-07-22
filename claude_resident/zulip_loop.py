@@ -16,6 +16,8 @@ from claude_resident.config import (
 from claude_resident.metacog import MetacogRunner
 from claude_resident.reactions import emoji_display
 from claude_resident.sandbox import ensure_bg_container, stop_bg_container
+from claude_resident.session_summary import start_session_reaper
+from claude_resident.tools.postmark_tools import start_postmark_refresher
 from claude_resident.util import safe_filename
 
 logger = logging.getLogger("zulip_loop")
@@ -256,6 +258,11 @@ def run(resident):
         metacog_runner.start()
     else:
         logger.info("Metacog runner disabled via config (METACOG_ENABLED=False)")
+
+    # Session reaper: writes the resident's first-person notes for ended
+    # sessions. Postmark refresher: keeps the doorstep current in context.
+    start_session_reaper(resident)
+    start_postmark_refresher(resident.state)
 
     result = resident.zulip.register(
         event_types=["message", "reaction", "typing"],

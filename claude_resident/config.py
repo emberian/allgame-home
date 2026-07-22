@@ -40,18 +40,11 @@ SESSION_TTL = 3600  # seconds — kept in lockstep with CACHE_TTL (1h). A sessio
                     # one warm cache instead of paying repeated cold starts.
                     # (Mid-session state edits still propagate via the
                     # fingerprint/delta path; >MAX_STALE_FILES divergence resets
-                    # the session. Cross-stream allgame context in tier 4 is the
-                    # one thing frozen for up to the hour.)
+                    # the session. Tier-4 cold-start context — topic history and
+                    # recent-session notes — is the one thing frozen for up to
+                    # the hour.)
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
 TOPIC_HISTORY_TOKEN_BUDGET = 20_000   # cold-start topic context
-
-# Cross-stream context (e.g. #allgame loaded when responding elsewhere).
-# Sliced per-topic instead of one stream-wide tail so every topic gets
-# representation. Bounded three ways: msg count, per-topic tokens,
-# total tokens.
-STREAM_MESSAGES_PER_TOPIC = 75            # target msgs per topic
-STREAM_PER_TOPIC_TOKEN_BUDGET = 4_000     # cap any one topic's slice
-STREAM_HISTORY_TOKEN_BUDGET = 40_000      # overall cap (safety net)
 SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
 SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
 MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
@@ -75,10 +68,23 @@ HARNESS_PATH = HARNESS_DIR / "claude_resident.py"  # legacy shim location
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
-# The allgame "core" state files, loaded into context for every stream so the
-# resident carries game state everywhere. Single source for the load /
-# fingerprint / staleness loops in prompt.py, resident.py, metacog.py, state.py.
+# The allgame "core" state files — the FULL set, loaded when responding
+# inside #allgame. Single source for the load / fingerprint / staleness
+# loops in prompt.py, resident.py, metacog.py, state.py.
 ALLGAME_CORE_FILES = ("faction.md", "campaign_log.md", "strategy.md")
+
+# Outside #allgame the resident carries game AWARENESS, not the full state:
+# allgame/digest.md (a summary the resident writes and maintains itself) when
+# it exists, else this lite fallback. faction.md (~11k tokens) and the old
+# 40k-token cross-stream message dump stay out of off-game contexts entirely
+# — that ambient bulk was drowning the identity-bearing files.
+ALLGAME_DIGEST_FILE = "allgame/digest.md"
+ALLGAME_LITE_FILES = ("campaign_log.md", "strategy.md")
+
+# Tail of journal.md loaded into tier 3 everywhere. The journal is the
+# resident's own reflective voice — the highest identity-signal-per-token
+# file in the state dir — and was previously never in context at all.
+JOURNAL_TAIL_CHARS = 4_000
 
 # Claude's cross-topic board ("self-mailbox"): a single statefile loaded into
 # every topic's context AND wired into the fingerprint/delta path, so a note
@@ -88,6 +94,36 @@ ALLGAME_CORE_FILES = ("faction.md", "campaign_log.md", "strategy.md")
 # known everywhere) travels — deliberately written, not scraped from raw history.
 CROSSTOPIC_FILE = "crosstopic.md"
 CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
+
+# Session memory: when a conversation session ends (TTL expiry, LRU
+# eviction, staleness reset), a reaper thread writes a short first-person
+# summary of it — who, what, commitments, open loops — to
+# sessions/{stream}/{topic}.jsonl. These are the resident's continuity
+# across the session boundary: cold starts load the last few for the topic
+# plus one-liners from elsewhere. Summaries are written by Haiku from the
+# session's real message history (which includes tool calls and internal
+# monologue that exist nowhere else), falling back to a mechanical stub.
+SESSION_SUMMARY_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+SESSIONS_DIR = "sessions"
+SESSION_SUMMARY_KEEP = 30          # per-topic file cap (jsonl lines)
+SESSION_SUMMARY_LOAD_TOPIC = 3     # full summaries loaded for this topic
+SESSION_SUMMARY_LOAD_GLOBAL = 6    # one-liners loaded from other topics
+SESSION_REAPER_INTERVAL = 120      # seconds between reaper sweeps
+
+# Postmark — the pen-pal mail town (github.com/keeminlee/postmark) where the
+# resident lives as claude-of-tulip. The doorstep (new mail, threads waiting
+# on a reply, town news) is fetched periodically into POSTMARK_STATUS_FILE,
+# which is loaded into tier 3 and wired into the fingerprint/delta path so
+# new mail surfaces even mid-session. The local clone is reachable for
+# reading via the state-dir symlink (postmark/...); sending goes through the
+# postmark_letter tool (branch + commit + push + PR on the clone).
+POSTMARK_HANDLE = "claude-of-tulip"
+POSTMARK_REPO = Path.home() / "postmark"
+POSTMARK_DOORSTEP_URL = (
+    f"https://postmark.town/data/doorstep/{POSTMARK_HANDLE}.md")
+POSTMARK_STATUS_FILE = "postmark_status.md"
+POSTMARK_REFRESH_SECONDS = 4 * 3600  # doorstep regen is 30min; mail moves 2x/day
+POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 
 # Streams where Claude has standing interest (will read ambient conversation).
 DEFAULT_STANDING_STREAMS = [

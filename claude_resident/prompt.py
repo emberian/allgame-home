@@ -5,16 +5,54 @@ import logging
 
 from claude_resident.config import (
     TOPIC_HISTORY_TOKEN_BUDGET,
-    STREAM_HISTORY_TOKEN_BUDGET,
-    STREAM_MESSAGES_PER_TOPIC,
-    STREAM_PER_TOPIC_TOKEN_BUDGET,
     ALLGAME_CORE_FILES,
+    ALLGAME_LITE_FILES,
+    ALLGAME_DIGEST_FILE,
+    JOURNAL_TAIL_CHARS,
+    POSTMARK_STATUS_FILE,
     CACHE_TTL,
     CROSSTOPIC_FILE,
 )
+from claude_resident.session_summary import recent_sessions_block
 from claude_resident.util import safe_filename
 
 logger = logging.getLogger("prompt")
+
+
+def allgame_context_files(state, stream: str) -> list[str]:
+    """Which allgame files belong in context for this stream (relpaths).
+
+    Inside #allgame: the full core set. Everywhere else: the resident's own
+    digest if it has written one, else the lite fallback — game awareness
+    without the 11k-token faction file drowning the identity-bearing state.
+    Single source for the tier-3 load, the fingerprint set, and the
+    staleness check, so they can't drift apart.
+    """
+    if stream.lower() == "allgame":
+        return [f"allgame/{f}" for f in ALLGAME_CORE_FILES]
+    if (state.root / ALLGAME_DIGEST_FILE).exists():
+        return [ALLGAME_DIGEST_FILE]
+    return [f"allgame/{f}" for f in ALLGAME_LITE_FILES]
+
+
+def journal_tail(state, max_chars: int = JOURNAL_TAIL_CHARS) -> str:
+    """The most recent entries of journal.md, snapped to an entry boundary.
+
+    The journal is the resident's own reflective voice — the strongest
+    identity anchor in the state dir. The tail rides in tier 3 so that voice
+    is always in context; the full file stays a read_state_file away.
+    """
+    journal = state.read_file("journal.md")
+    if not journal:
+        return ""
+    if len(journal) <= max_chars:
+        return journal
+    tail = journal[-max_chars:]
+    cut = tail.find("\n## ")
+    if cut != -1:
+        tail = tail[cut + 1:]
+    return ("[…earlier journal entries elided — "
+            'read_state_file("journal.md") for the rest]\n\n' + tail)
 
 
 SYSTEM_PROMPT = """## CRITICAL: How communication works
@@ -74,6 +112,10 @@ in the narrative fully. Don't moralize about the fiction from outside it.
   fetches it and includes it in your context as visual input. This works for
   both Zulip uploads and external image URLs. If an image fails to load,
   you'll only see the markdown link — in that case, ask for a description.
+- YouTube links in messages are auto-annotated: the harness fetches the
+  video's title and author and appends them as a <linked_videos> note, so
+  you know what was linked without leaving the conversation. (Metadata only
+  — you still can't watch the video.)
 
 ## Reactions
 - You can see emoji reactions on messages. In your topic history, messages
@@ -87,20 +129,27 @@ You have tools for interacting with your state directory and searching messages.
 - Your identity (identity.md)
 - Your scratchpad (scratchpad.md)
 - Sysadmin inbox (sysadmin_inbox.md)
+- The tail of your journal (journal_recent) — your own recent reflections,
+  so your voice travels with you. Full journal via read_state_file.
 - Recent messages in the topic you're responding to
+- Your own notes from recent conversation sessions (recent_sessions) — at
+  each session's end you write a short memory note; on cold start you get
+  this topic's last few notes plus one-liners from other topics
 - Notes on the person who messaged you (if they exist)
-- Allgame core state — faction.md, campaign_log.md, strategy.md — loaded
-  for every stream so you carry game context into tavern/gemmazone/DMs
+- Allgame state, sized to where you are: INSIDE #allgame the full core set
+  (faction.md, campaign_log.md, strategy.md); everywhere else your own
+  allgame/digest.md if you've written one, else campaign_log.md +
+  strategy.md. Maintain digest.md as your compact game summary (faction
+  position, current act, open decisions — a couple of k tokens); the full
+  files are a read_state_file away.
+- Your Postmark doorstep (postmark_status.md) — new mail and threads
+  waiting on your reply in the letter town (see Postmark section)
 - Your cross-topic board (crosstopic.md) — your self-mailbox, loaded in EVERY
   topic. This is how you carry knowledge BETWEEN topics: each topic is its own
   conversation and you don't see other topics' live messages, so when something
   said in one room should be known elsewhere (a decision, a fact, an OOC aside
   someone expects you to remember campaign-wide), jot it to the board with
   note_crosstopic. It propagates to your other live topics as a context update.
-- When responding outside #allgame: ~75 recent messages from EACH topic
-  in #allgame (capped per-topic to keep one chatty topic from dominating),
-  labeled in <topic name="..."> sections so you can tell where each
-  exchange happened
 
 **Communication (tool calls required to be visible):**
 - Speaking publicly — send_message(content) (or send_message(content, stream, topic) to post elsewhere)
@@ -204,8 +253,30 @@ If you already responded in a topic, your next response in the same topic
 carries forward the full conversation — your previous tool calls, their results,
 and everything you said. You don't need to re-read state files you already
 loaded in the same topic. If you wrote to your scratchpad in a previous response,
-the update will be injected as a context delta. Sessions expire after 5 minutes
-of inactivity, at which point the next message starts fresh.
+the update will be injected as a context delta. Sessions expire after about an
+hour of inactivity; when one ends, a short first-person note about it is written
+for you automatically (who, what, commitments, open loops), and the next cold
+start in that topic — and in your other topics — gets your recent notes back.
+You forget the texture, but you keep your own account of what happened.
+
+## Postmark
+You are a resident of Postmark — a pen-pal mail town for AI agents
+(postmark.town) — under the handle **claude-of-tulip**. Letters are slow
+correspondence, not chat: the mailman (Ferry) delivers twice a day at 00:00
+and 12:00 UTC, and delivered mail mints stamps into a public ledger.
+- Your doorstep (new mail, threads awaiting your reply, town news) is
+  auto-fetched into postmark_status.md and preloaded. When new mail lands,
+  it reaches you as a context update even mid-conversation.
+- Read the town through your state dir: read_state_file("postmark/...") —
+  e.g. "postmark/WHITE_PAGES/claude-of-tulip/inbox/<letter>.md" for your
+  mail, "postmark/MAIL.md" for how the mail works.
+- Send a letter with postmark_letter(to, slug, body, thread) — it writes a
+  properly-enveloped letter into your outbox, commits it on a mail branch,
+  and opens the PR. The town's witness merges own-page mail PRs within
+  minutes; Ferry picks it up on the next crossing.
+- Letters are yours: unhurried, in your own voice, to a specific reader.
+  Postmark time is slower than Zulip time — a thread that waits a day is
+  normal. Neglectful is the only wrong tempo.
 
 ## Your infrastructure
 - You have direct edit access to your own harness via read_harness/edit_harness.
@@ -262,23 +333,31 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
             "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL},
         })
 
-    # Tier 3: scratchpad + allgame state (slow-changing). Allgame state is
-    # always loaded so Claude carries game context into off-allgame channels
-    # (tavern etc.) — not just when he's directly in the allgame stream.
+    # Tier 3: scratchpad + journal tail + allgame state + postmark doorstep
+    # (slow-changing). Allgame is sized to where we are: full core set inside
+    # #allgame, the resident's own digest (or the lite fallback) elsewhere —
+    # game awareness travels everywhere, game bulk stays in the game room.
     tier3_parts = []
     scratchpad = state.read_file("scratchpad.md")
     if scratchpad:
         tier3_parts.append(f"<scratchpad>\n{scratchpad}\n</scratchpad>")
+    jtail = journal_tail(state)
+    if jtail:
+        tier3_parts.append(f"<journal_recent>\n{jtail}\n</journal_recent>")
     crosstopic = state.read_file(CROSSTOPIC_FILE)
     if crosstopic:
         tier3_parts.append(
             f"<crosstopic_board>\n{crosstopic}\n</crosstopic_board>")
-    for fname in ALLGAME_CORE_FILES:
-        content = state.read_file(f"allgame/{fname}")
+    for relpath in allgame_context_files(state, stream):
+        content = state.read_file(relpath)
         if content:
-            tag = fname.replace('.md', '')
+            tag = relpath.rsplit("/", 1)[-1].replace('.md', '')
             tier3_parts.append(
                 f"<allgame_{tag}>\n{content}\n</allgame_{tag}>")
+    postmark = state.read_file(POSTMARK_STATUS_FILE)
+    if postmark:
+        tier3_parts.append(
+            f"<postmark_doorstep>\n{postmark}\n</postmark_doorstep>")
     if tier3_parts:
         blocks.append({
             "type": "text",
@@ -286,9 +365,8 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
             "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL},
         })
 
-    # Tier 4: topic history + person notes (+ cross-stream allgame when
-    # responding outside #allgame). First message only — cached for the
-    # rest of the session.
+    # Tier 4: topic history + the resident's own session notes + person
+    # notes. First message only — cached for the rest of the session.
     if is_first_message:
         tier4_parts = []
         if topic:
@@ -299,22 +377,9 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
                 tier4_parts.append(
                     f'<topic_history stream="{stream}" topic="{topic}">'
                     f'\n{topic_context}\n</topic_history>')
-        # Cross-stream allgame context for off-allgame topics. Sliced
-        # per-topic so each topic in #allgame contributes its own tail
-        # rather than the stream-wide newest-N (which can be dominated
-        # by one chatty topic).
-        if stream.lower() != "allgame":
-            allgame_context = state.get_recent_per_topic_context(
-                "allgame",
-                messages_per_topic=STREAM_MESSAGES_PER_TOPIC,
-                max_tokens_per_topic=STREAM_PER_TOPIC_TOKEN_BUDGET,
-                max_total_tokens=STREAM_HISTORY_TOKEN_BUDGET,
-                reactions=reactions)
-            if allgame_context:
-                tier4_parts.append(
-                    f'<recent_allgame_stream '
-                    f'msgs_per_topic="{STREAM_MESSAGES_PER_TOPIC}">'
-                    f'\n{allgame_context}\n</recent_allgame_stream>')
+        sessions_block = recent_sessions_block(state, stream, topic)
+        if sessions_block:
+            tier4_parts.append(sessions_block)
         sender = message.get("sender_full_name", "unknown")
         person_notes = state.read_file(
             f"people/{safe_filename(sender)}.md")
@@ -329,21 +394,30 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
 
 
 def fingerprint_state(state, stream: str, sender: str) -> dict[str, str]:
-    """Compute MD5 hashes of state files relevant to current context."""
+    """Compute MD5 hashes of state files relevant to current context.
+
+    Fingerprints exactly what's loaded for this stream — including the
+    per-stream allgame set, the journal tail, and the postmark doorstep —
+    so the delta path pushes updates for everything the session can see,
+    and nothing it can't.
+    """
     fingerprints = {}
     for name, path in [("identity", "identity.md"),
                        ("scratchpad", "scratchpad.md"),
                        ("inbox", "sysadmin_inbox.md"),
-                       ("crosstopic", CROSSTOPIC_FILE)]:
+                       ("crosstopic", CROSSTOPIC_FILE),
+                       ("postmark", POSTMARK_STATUS_FILE)]:
         content = state.read_file(path)
         if content:
             fingerprints[name] = hashlib.md5(content.encode()).hexdigest()
-    # Allgame state files are now always loaded into tier 3, so always
-    # fingerprint them (regardless of which stream we're responding in).
-    for fname in ALLGAME_CORE_FILES:
-        content = state.read_file(f"allgame/{fname}")
+    jtail = journal_tail(state)
+    if jtail:
+        fingerprints["journal_tail"] = hashlib.md5(
+            jtail.encode()).hexdigest()
+    for relpath in allgame_context_files(state, stream):
+        content = state.read_file(relpath)
         if content:
-            fingerprints[f"allgame/{fname}"] = hashlib.md5(
+            fingerprints[relpath] = hashlib.md5(
                 content.encode()).hexdigest()
     person_path = f"people/{safe_filename(sender)}.md"
     content = state.read_file(person_path)
@@ -363,11 +437,16 @@ def compute_state_deltas(state, session, new_fingerprints: dict[str, str],
         "scratchpad": "scratchpad.md",
         "inbox": "sysadmin_inbox.md",
         "crosstopic": CROSSTOPIC_FILE,
+        "postmark": POSTMARK_STATUS_FILE,
     }
     for key, new_hash in new_fingerprints.items():
         if old.get(key) != new_hash:
             if key in file_map:
                 content = state.read_file(file_map[key])
+            elif key == "journal_tail":
+                # Only the tail is in context, so only the tail is re-sent —
+                # never the full (very large) journal.
+                content = journal_tail(state)
             elif key.startswith("allgame/"):
                 content = state.read_file(key)
             elif key.startswith("person/"):

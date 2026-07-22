@@ -14,6 +14,7 @@ from claude_resident.tools import (
     background_tools,
     harness_tools,
     lm_tools,
+    postmark_tools,
 )
 
 logger = logging.getLogger("tools.dispatch")
@@ -132,6 +133,12 @@ def _h_edit_harness(inp, ctx):
 
 def _h_run_mirror_council(inp, ctx):
     return background_tools.run_mirror_council_tool(inp, ctx.state)
+
+def _h_postmark_check(inp, ctx):
+    return postmark_tools.postmark_check(inp, ctx.state)
+
+def _h_postmark_letter(inp, ctx):
+    return postmark_tools.postmark_letter(inp, ctx.state)
 
 def _h_read_tweet(inp, ctx):
     return x_tools.read_tweet(inp)
@@ -348,6 +355,8 @@ _HANDLERS = {
     "run_background": _h_run_background,
     "query_background": _h_query_background,
     "edit_harness": _h_edit_harness,
+    "postmark_check": _h_postmark_check,
+    "postmark_letter": _h_postmark_letter,
     "run_mirror_council": _h_run_mirror_council,
     "send_message": _h_send_message,
     "send_dm": _h_send_dm,
