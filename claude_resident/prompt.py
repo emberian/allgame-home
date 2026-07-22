@@ -5,8 +5,6 @@ import logging
 
 from claude_resident.config import (
     TOPIC_HISTORY_TOKEN_BUDGET,
-    CROSS_STREAM_PER_STREAM_TOKENS,
-    DEFAULT_STANDING_STREAMS,
     ALLGAME_CORE_FILES,
     ALLGAME_LITE_FILES,
     ALLGAME_DIGEST_FILE,
@@ -134,9 +132,6 @@ You have tools for interacting with your state directory and searching messages.
 - The tail of your journal (journal_recent) — your own recent reflections,
   so your voice travels with you. Full journal via read_state_file.
 - Recent messages in the topic you're responding to
-- A bounded recent-activity tail from your OTHER standing streams
-  (recent_stream_activity) — so you know what's been happening around the
-  house, wherever you're standing
 - Your own notes from recent conversation sessions (recent_sessions) — at
   each session's end you write a short memory note; on cold start you get
   this topic's last few notes plus one-liners from other topics
@@ -382,19 +377,6 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
                 tier4_parts.append(
                     f'<topic_history stream="{stream}" topic="{topic}">'
                     f'\n{topic_context}\n</topic_history>')
-        # Bounded awareness of the other standing streams — what's been
-        # happening around the house, labeled per-stream, each capped so
-        # no single room dominates. (Line format includes #topic labels.)
-        for other in DEFAULT_STANDING_STREAMS:
-            if other.lower() == stream.lower():
-                continue
-            activity = state.get_recent_stream_context(
-                other, max_tokens=CROSS_STREAM_PER_STREAM_TOKENS,
-                reactions=reactions)
-            if activity:
-                tier4_parts.append(
-                    f'<recent_stream_activity stream="{other}">'
-                    f'\n{activity}\n</recent_stream_activity>')
         sessions_block = recent_sessions_block(state, stream, topic)
         if sessions_block:
             tier4_parts.append(sessions_block)
