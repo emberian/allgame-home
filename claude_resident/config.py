@@ -44,8 +44,14 @@ SESSION_TTL = 3600  # seconds — kept in lockstep with CACHE_TTL (1h). A sessio
                     # recent-session notes — is the one thing frozen for up to
                     # the hour.)
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
-TOPIC_HISTORY_TOKEN_BUDGET = 20_000   # cold-start topic context
+TOPIC_HISTORY_TOKEN_BUDGET = 35_000   # cold-start topic context
 SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
+
+# Cold-start awareness of the OTHER standing streams: a bounded recent-tail
+# from each standing stream except the one being responded in, so tavern
+# buzz reaches DMs and game-room talk reaches tavern. Deliberately an
+# eighth of the old 40k allgame-wide dump — awareness, not immersion.
+CROSS_STREAM_PER_STREAM_TOKENS = 8_000
 SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
 MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
 TYPING_HOLDOFF_TIMEOUT = 30  # max seconds to wait for someone to finish typing
@@ -91,7 +97,7 @@ ALLGAME_LITE_FILES = ("campaign_log.md", "strategy.md")
 # Tail of journal.md loaded into tier 3 everywhere. The journal is the
 # resident's own reflective voice — the highest identity-signal-per-token
 # file in the state dir — and was previously never in context at all.
-JOURNAL_TAIL_CHARS = 4_000
+JOURNAL_TAIL_CHARS = 24_000
 
 # Claude's cross-topic board ("self-mailbox"): a single statefile loaded into
 # every topic's context AND wired into the fingerprint/delta path, so a note
@@ -113,8 +119,8 @@ CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
 SESSION_SUMMARY_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 SESSIONS_DIR = "sessions"
 SESSION_SUMMARY_KEEP = 30          # per-topic file cap (jsonl lines)
-SESSION_SUMMARY_LOAD_TOPIC = 3     # full summaries loaded for this topic
-SESSION_SUMMARY_LOAD_GLOBAL = 6    # one-liners loaded from other topics
+SESSION_SUMMARY_LOAD_TOPIC = 6     # full summaries loaded for this topic
+SESSION_SUMMARY_LOAD_GLOBAL = 12   # one-liners loaded from other topics
 SESSION_REAPER_INTERVAL = 120      # seconds between reaper sweeps
 
 # Postmark — the pen-pal mail town (github.com/keeminlee/postmark) where the
