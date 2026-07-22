@@ -12,6 +12,7 @@ from claude_resident.config import (
     BACKFILL_OTHER_STREAMS,
     BACKFILL_ALL_STREAMS,
     METACOG_ENABLED,
+    REPLAY_MAX_AGE_SECONDS,
 )
 from claude_resident.metacog import MetacogRunner
 from claude_resident.reactions import emoji_display
@@ -154,8 +155,10 @@ def replay_pending(resident):
     """
     bot_name = resident.judge.bot_name
     pending: list[dict] = []
+    replay_cutoff = time.time() - REPLAY_MAX_AGE_SECONDS
 
     def _collect(narrow: list[dict], label: str):
+        stale_skipped = 0
         try:
             result = resident.zulip.get_messages({
                 "anchor": "newest",
@@ -176,7 +179,19 @@ def replay_pending(resident):
                 # the judge on messages we already decided to skip.
                 if msg.get("id") in resident.handled:
                     continue
+                # Age bound: replay bridges downtime, it doesn't answer
+                # history. A message can outlive the ledger's eviction
+                # horizon and masquerade as "new" — mark it handled (which
+                # also re-protects it from eviction) and move on.
+                if msg.get("timestamp", 0) < replay_cutoff:
+                    resident.handled.mark(msg.get("id"))
+                    stale_skipped += 1
+                    continue
                 pending.append(msg)
+            if stale_skipped:
+                logger.info(f"Replay: skipped {stale_skipped} stale "
+                            f"message(s) in {label} (older than "
+                            f"{REPLAY_MAX_AGE_SECONDS // 86400}d)")
         except Exception as e:
             logger.error(f"Error checking pending in {label}: {e}",
                          exc_info=True)

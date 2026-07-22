@@ -55,6 +55,13 @@ BACKFILL_PER_STANDING_STREAM = 200
 BACKFILL_OTHER_STREAMS = 30         # for non-standing streams when enabled
 BACKFILL_ALL_STREAMS = True         # pull a tail from every visible stream
 
+# Replay is for bridging DOWNTIME, not archaeology: on restart, unhandled
+# messages older than this are marked handled and skipped instead of being
+# answered. Without this bound, any message that outlived the handled-ledger
+# eviction horizon looked "new" after a restart — the resident once woke up
+# and dutifully replied to four-month-old DMs (2026-07-22).
+REPLAY_MAX_AGE_SECONDS = 3 * 86400
+
 # Metacognitive loop
 METACOG_ENABLED = False  # daily self-curation runner — disabled to avoid
                          # unaccounted-for API spend; flip on when ready

@@ -28,7 +28,12 @@ LEDGER_FILE = "handled_message_ids.log"
 class HandledSet:
     """A persisted set of handled message ids with bounded memory."""
 
-    def __init__(self, state, cap: int = 5000):
+    # Cap sizing: clankerville alone can churn ~8k messages in three weeks,
+    # so 5000 gave an eviction horizon of barely a week — old-but-live
+    # messages (quiet DM threads especially) fell out and were replayed as
+    # "new" on restart. 50k ints is trivial memory and pushes the horizon
+    # out past any plausible gap between restarts.
+    def __init__(self, state, cap: int = 50_000):
         self.state = state
         self.cap = cap
         self._set: set[int] = set()
