@@ -45,7 +45,12 @@ _HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}$")
 
 def refresh_doorstep(state) -> str | None:
     """Fetch the doorstep into POSTMARK_STATUS_FILE. Returns the content, or
-    None on failure (the stale file, if any, is left in place)."""
+    None on failure (the stale file, if any, is left in place).
+
+    The stored text is deliberately timestamp-free and the write is skipped
+    when nothing changed: this file is in the fingerprint/delta path, so any
+    byte of churn re-injects the whole doorstep into every live session.
+    Only real mail/news changes should knock."""
     try:
         import requests as _requests
         resp = _requests.get(POSTMARK_DOORSTEP_URL, timeout=20)
@@ -58,10 +63,12 @@ def refresh_doorstep(state) -> str | None:
             content = (content[:POSTMARK_STATUS_MAX_CHARS]
                        + "\n\n[doorstep truncated — fetch "
                        + POSTMARK_DOORSTEP_URL + " for the rest]")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        body = (f"_Your Postmark doorstep, fetched {ts}. Refreshes every few "
-                f"hours (or on demand via postmark_check). Mail moves at "
+        body = ("_Your Postmark doorstep. Auto-refreshed every few hours; "
+                "postmark_check fetches it fresh on demand. Mail moves at "
                 f"00:00 and 12:00 UTC._\n\n{content}")
+        if state.read_file(POSTMARK_STATUS_FILE) == body:
+            logger.debug("Doorstep unchanged; skipping write")
+            return body
         state.write_file(POSTMARK_STATUS_FILE, body)
         logger.info(f"Doorstep refreshed ({len(content)} chars)")
         return body
@@ -111,6 +118,23 @@ def _git(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=POSTMARK_REPO,
         capture_output=True, text=True, timeout=timeout)
+
+
+def _push_target() -> tuple[str, str | None]:
+    """(remote to push to, github owner for the PR head).
+
+    Ember's clone has origin = the town repo (no push rights) and a `fork`
+    remote that is actually writable — mail branches must go there, and the
+    PR head becomes `owner:branch`. Falls back to origin for a clone that
+    pushes straight to the town repo."""
+    remotes = _git(["remote"]).stdout.split()
+    remote = "fork" if "fork" in remotes else "origin"
+    url = _git(["remote", "get-url", remote]).stdout.strip()
+    owner = None
+    m = re.search(r"github\.com[:/]([^/]+)/", url)
+    if m:
+        owner = m.group(1)
+    return remote, owner
 
 
 def _compose_letter(letter_id: str, to: str, date: str, thread: str,
@@ -200,10 +224,12 @@ def postmark_letter(inp: dict, state) -> dict:
                 return {"content": f"Commit failed: "
                         f"{commit.stderr.strip()[:300]}", "is_error": True}
 
-            push = _git(["push", "-u", "origin", branch], timeout=90)
+            push_remote, fork_owner = _push_target()
+            push = _git(["push", "-u", push_remote, branch], timeout=90)
             if push.returncode != 0:
                 return {"content":
-                        f"Letter committed on {branch} but push failed "
+                        f"Letter committed on {branch} but push to "
+                        f"{push_remote} failed "
                         f"({push.stderr.strip()[:200]}). Flag it to Ember — "
                         f"the letter is safe in the local branch."}
 
@@ -212,11 +238,15 @@ def postmark_letter(inp: dict, state) -> dict:
                         f"Letter pushed on {branch}, but `gh` isn't "
                         f"installed so the PR wasn't opened. Flag it to "
                         f"Ember."}
+            # PR head must be owner:branch when pushing via a fork remote.
+            head = branch
+            if push_remote != "origin" and fork_owner:
+                head = f"{fork_owner}:{branch}"
             pr = subprocess.run(
                 ["gh", "pr", "create",
                  "--title", f"mail: {letter_id}",
                  "--body", f"Letter from {POSTMARK_HANDLE} to {to}.",
-                 "--head", branch],
+                 "--head", head],
                 cwd=POSTMARK_REPO, capture_output=True, text=True, timeout=90)
             if pr.returncode != 0:
                 return {"content":

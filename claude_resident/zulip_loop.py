@@ -33,6 +33,35 @@ def backfill_history(resident):
     """
     logger.info("Backfilling message history from Zulip API...")
 
+    # Seed the dedup index from ALL local channel logs first — including
+    # DMs, which the API backfill below never covers (it only walks
+    # streams). Without this, a replayed DM is re-logged on top of its
+    # original entry and the topic history doubles up.
+    seeded = 0
+    channels_dir = resident.state.root / "channels"
+    if channels_dir.exists():
+        for log_file in channels_dir.rglob("*.jsonl"):
+            stream_name = log_file.parent.name
+            for line in log_file.read_text().strip().split("\n"):
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                mid = entry.get("msg_id")
+                if mid and mid not in resident._msg_index:
+                    resident._msg_index[mid] = {
+                        "stream": stream_name,
+                        "topic": entry.get("topic", ""),
+                        "sender": entry.get("sender", "unknown"),
+                        "preview": entry.get("content", "")[:80].replace(
+                            "\n", " "),
+                    }
+                    seeded += 1
+        resident._cap_indexes()
+        logger.info(f"Seeded msg index from local logs: {seeded} ids")
+
     standing = set(resident.judge.standing_streams)
     stream_targets: list[tuple[str, int]] = [
         (s, BACKFILL_PER_STANDING_STREAM) for s in resident.judge.standing_streams

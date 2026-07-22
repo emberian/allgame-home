@@ -106,6 +106,29 @@ def build_content_blocks(text: str, zulip_client=None) -> list[dict]:
     return blocks
 
 
+# Raw-byte caps for auto-fetched media. These fire on ANY posted URL with a
+# matching extension — no model in the loop — so the download itself must be
+# bounded, not just checked after buffering the whole body. Sized so the
+# base64 payload stays inside API limits (b64 is 4/3 of raw).
+_MAX_IMAGE_BYTES = 3_750_000    # ~5MB base64
+_MAX_PDF_BYTES = 24_000_000     # ~32MB base64
+
+
+def _bounded_body(response, max_bytes: int, url: str) -> Optional[bytes]:
+    """Read a streamed response up to max_bytes; None if it exceeds the cap."""
+    clen = response.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > max_bytes:
+        logger.warning(f"Fetch exceeds size cap ({clen} bytes), skipping: {url}")
+        return None
+    data = bytearray()
+    for chunk in response.iter_content(65536):
+        data.extend(chunk)
+        if len(data) > max_bytes:
+            logger.warning(f"Fetch exceeded size cap mid-stream, skipping: {url}")
+            return None
+    return bytes(data)
+
+
 def fetch_image_as_block(url: str,
                          zulip_client=None) -> Optional[dict]:
     """Fetch an image and return it as an Anthropic API image content block."""
@@ -114,10 +137,11 @@ def fetch_image_as_block(url: str,
             if zulip_client is None:
                 return None
             full_url = urljoin(zulip_client.base_url, url)
-            response = zulip_client.session.get(full_url, timeout=10)
+            response = zulip_client.session.get(full_url, timeout=10,
+                                                stream=True)
         else:
             import requests as _requests
-            response = _requests.get(url, timeout=10)
+            response = _requests.get(url, timeout=10, stream=True)
 
         if response.status_code != 200:
             logger.warning(
@@ -134,14 +158,13 @@ def fetch_image_as_block(url: str,
         else:
             media_type = "image/png"
 
-        encoded = base64.b64encode(response.content).decode("utf-8")
-
-        if len(encoded) > 5_000_000:
-            logger.warning(f"Image too large, skipping: {url}")
+        body = _bounded_body(response, _MAX_IMAGE_BYTES, url)
+        if body is None:
             return None
+        encoded = base64.b64encode(body).decode("utf-8")
 
         logger.info(
-            f"Fetched image: {url} ({media_type}, {len(response.content)} bytes)")
+            f"Fetched image: {url} ({media_type}, {len(body)} bytes)")
 
         return {
             "type": "image",
@@ -165,25 +188,25 @@ def fetch_document_as_block(url: str,
             if zulip_client is None:
                 return None
             full_url = urljoin(zulip_client.base_url, url)
-            response = zulip_client.session.get(full_url, timeout=30)
+            response = zulip_client.session.get(full_url, timeout=30,
+                                                stream=True)
         else:
             import requests as _requests
-            response = _requests.get(url, timeout=30)
+            response = _requests.get(url, timeout=30, stream=True)
 
         if response.status_code != 200:
             logger.warning(
                 f"Failed to fetch PDF {url}: HTTP {response.status_code}")
             return None
 
-        encoded = base64.b64encode(response.content).decode("utf-8")
-
-        # Anthropic accepts PDFs up to 32MB; cap base64 payload accordingly.
-        if len(encoded) > 32_000_000:
-            logger.warning(f"PDF too large, skipping: {url}")
+        # Anthropic accepts PDFs up to 32MB base64; bound the raw download.
+        body = _bounded_body(response, _MAX_PDF_BYTES, url)
+        if body is None:
             return None
+        encoded = base64.b64encode(body).decode("utf-8")
 
         logger.info(
-            f"Fetched PDF: {url} ({len(response.content)} bytes)")
+            f"Fetched PDF: {url} ({len(body)} bytes)")
 
         return {
             "type": "document",

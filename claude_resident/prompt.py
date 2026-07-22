@@ -479,7 +479,8 @@ def compute_state_deltas(state, session, new_fingerprints: dict[str, str],
     for key in old:
         if key not in new_fingerprints:
             changed.append(
-                f'<updated_state file="{key}">[removed]</updated_state>')
+                f'<updated_state file="{key}">[no longer loaded in this '
+                f'context — the file itself is untouched]</updated_state>')
     if not changed:
         return ""
     return ("<context_updates>\nThe following state files changed since your "

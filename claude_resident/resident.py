@@ -662,6 +662,13 @@ class ClaudeResident:
 
                 session.messages.append(
                     {"role": "user", "content": tool_results})
+                # Advance the cache breakpoint to the tool results we just
+                # appended (same pattern as metacog). Without this, every
+                # later turn re-sends all accumulated tool results as
+                # UNCACHED input — measured at 7.5M wasted tokens over
+                # three weeks, growing with loop depth.
+                clear_user_cache_control(session.messages)
+                set_last_user_cache_control(session.messages)
             else:
                 self.logger.warning(
                     f"Tool loop hit max iterations ({MAX_TOOL_TURNS})")
