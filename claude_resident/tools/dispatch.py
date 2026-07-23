@@ -84,6 +84,9 @@ def _h_search_messages(inp, ctx):
 def _h_search_zulip_history(inp, ctx):
     return search_tools.search_zulip_history(inp, ctx.zulip)
 
+def _h_search_archive(inp, ctx):
+    return search_tools.search_archive(inp, ctx.state)
+
 def _h_send_sysadmin_message(inp, ctx):
     return comms_tools.send_sysadmin_message(
         inp, ctx.state, ctx.sender, f"{ctx.stream}>{ctx.topic}")
@@ -346,6 +349,7 @@ _HANDLERS = {
     "upload_state_file": _h_upload_state_file,
     "search_messages": _h_search_messages,
     "search_zulip_history": _h_search_zulip_history,
+    "search_archive": _h_search_archive,
     "send_sysadmin_message": _h_send_sysadmin_message,
     "run_sandbox": _h_run_sandbox,
     "get_sandbox_file": _h_get_sandbox_file,

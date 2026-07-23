@@ -1,7 +1,7 @@
-"""Recursive language-model invocation through the same Bedrock client.
+"""Recursive language-model invocation through the resident's own client.
 
 `invoke_model` lets the resident make a nested model call over the exact
-`AnthropicBedrock` client it itself runs on. Because it's the same API path
+API client it itself runs on (OAuth or Bedrock — see auth.py). Because it's the same API path
 that keeps the resident alive, it's available whenever the resident is —
 unlike `lm_studio` (the local server can be offline) or the sandbox (which
 can run out of API credits). That availability is the whole point: the GM's
@@ -12,16 +12,14 @@ reasoned it out himself" when an external path is down.
 
 import logging
 
+from claude_resident.config import MODEL_IDS
+
 logger = logging.getLogger("tools.lm")
 
-# Confirmed-enabled inference profiles in this account (commonquant-ember,
-# us-east-1) — verified via `aws bedrock list-inference-profiles`. The model
-# arg also accepts any full inference-profile id verbatim.
-MODEL_ALIASES = {
-    "haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "sonnet": "us.anthropic.claude-sonnet-4-6",
-    "opus": "us.anthropic.claude-opus-4-6-v1",
-}
+# Backend-appropriate model ids from config (bare first-party ids on the
+# OAuth backend, inference-profile ids on Bedrock). The model arg also
+# accepts any full model id verbatim.
+MODEL_ALIASES = dict(MODEL_IDS)
 
 MAX_TOKENS_CAP = 8192
 

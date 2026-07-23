@@ -6,12 +6,11 @@ import argparse
 from pathlib import Path
 
 import zulip
-import anthropic
 
 from claude_resident.config import (
     DEFAULT_STATE_DIR, DEFAULT_MODEL, DEFAULT_STANDING_STREAMS, LOG_FORMAT,
-    ANTHROPIC_BETAS,
 )
+from claude_resident.auth import build_anthropic_client
 from claude_resident.state import StateManager
 from claude_resident.judge import EngagementJudge
 from claude_resident.resident import ClaudeResident
@@ -78,6 +77,13 @@ def _setup_debug_log():
 
     deblog = Path.home() / "dev" / "allgame" / "deblog.txt"
 
+    # Rotate at boot when oversized (it grows forever otherwise — hit 53MB).
+    try:
+        if deblog.exists() and deblog.stat().st_size > 20_000_000:
+            deblog.replace(deblog.with_suffix(".txt.1"))
+    except OSError:
+        pass
+
     def _log_response(response):
         try:
             req = response.request
@@ -132,15 +138,8 @@ def _run_directly(args):
     debug_hook = _setup_debug_log()
     http_client = httpx.Client(
         event_hooks={"response": [debug_hook]})
-    default_headers = {}
-    if ANTHROPIC_BETAS:
-        default_headers["anthropic-beta"] = ",".join(ANTHROPIC_BETAS)
-    anthropic_client = anthropic.AnthropicBedrock(
-        aws_profile=args.aws_profile,
-        aws_region="us-east-1",
-        http_client=http_client,
-        default_headers=default_headers,
-    )
+    anthropic_client = build_anthropic_client(
+        http_client=http_client, aws_profile=args.aws_profile)
     state = StateManager(args.state_dir)
 
     bot_profile = zulip_client.get_profile()

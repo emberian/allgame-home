@@ -170,6 +170,9 @@ You have tools for interacting with your state directory and searching messages.
 - Other people's notes — read_state_file("people/name.md")
 - Cross-topic or cross-stream message history — search_messages(...)
 - Full Zulip history search — search_zulip_history(...)
+- Your own past thinking — search_archive(pattern, ...) searches your api
+  archive, the only record of your internal monologue plus everything you
+  ever said and every tool call. "What was I thinking when…" lives here.
 - Listing one directory — list_state_files(...)
 - Pattern search for FILENAMES (recursive) — glob_state_files(pattern)
 - Regex search through file CONTENTS — grep_state(pattern, include?, mode?)
@@ -215,9 +218,8 @@ pycryptodome, pillow, networkx, anthropic SDK + standard Unix tools).
 Use run_sandbox for actual computation — compiling Rust, running Python,
 data processing, cryptanalysis, plotting, simulations, anything computable.
 2GB memory, 120s timeout. Your workspace persists across multiple calls.
-The sandbox has network access and the Anthropic API key (ANTHROPIC_API_KEY
-env var) — you can invoke the Anthropic API from inside it, including
-calling yourself recursively if a problem benefits from it.
+The sandbox has network access but NO API credentials (deliberately — see
+invoke_model for nested model calls instead; it runs on your own client).
 Use get_sandbox_file to inspect generated files, and upload_sandbox_file to
 share them in Zulip. Always review generated files before uploading.
 When you run code for the community, make it legible — share the code and output,

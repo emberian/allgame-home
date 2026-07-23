@@ -13,7 +13,9 @@ from claude_resident.config import (
     DEFAULT_MODEL, MAX_RESPONSE_TOKENS, THINKING_BUDGET,
     COOLDOWN_SECONDS, MAX_TOOL_TURNS, SESSION_MAX_TOKENS, MAX_STALE_FILES,
     SESSION_TRIM_PAIRS, TYPING_HOLDOFF_TIMEOUT, ALLGAME_CORE_FILES,
+    CACHE_TTL,
 )
+from claude_resident.auth import refresh_oauth_token
 from claude_resident.state import StateManager
 from claude_resident.sessions import SessionManager
 from claude_resident.judge import EngagementJudge
@@ -513,7 +515,17 @@ class ClaudeResident:
                             f"Anthropic API error (turn {turn}): {e}")
                         break
                 except anthropic.APIError as e:
-                    if e.status_code == 529:
+                    if e.status_code == 401 and refresh_oauth_token(
+                            self.anthropic):
+                        # tokeman rotated the OAuth token under us — the
+                        # fresh one is now on the client; retry once.
+                        try:
+                            response = _create()
+                        except anthropic.APIError as e2:
+                            self.logger.error(
+                                f"API error after token refresh: {e2}")
+                            break
+                    elif e.status_code == 529:
                         for attempt in range(3):
                             wait = 30 * (attempt + 1)
                             self.logger.warning(
@@ -547,8 +559,10 @@ class ClaudeResident:
                 total_input = input_tokens + cache_read + cache_create
                 session.estimated_message_tokens = total_input
                 # Cost: Opus 4.x base pricing per MTok ($5 in / $25 out).
+                # Cache writes: 1.25x base for the 5m TTL, 2x for the 1h TTL.
                 cost_input = input_tokens * 5.0 / 1_000_000
-                cost_cache_write = cache_create * 6.25 / 1_000_000
+                cache_write_rate = 10.0 if CACHE_TTL == "1h" else 6.25
+                cost_cache_write = cache_create * cache_write_rate / 1_000_000
                 cost_cache_read = cache_read * 0.50 / 1_000_000
                 cost_output = output_tokens * 25.0 / 1_000_000
                 cost_total = (cost_input + cost_cache_write

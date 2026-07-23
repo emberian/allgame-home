@@ -1,15 +1,60 @@
 """Constants and configuration for the Claude resident harness."""
 
+import os
 from pathlib import Path
 
 DEFAULT_STATE_DIR = Path.home() / "claude_state"
-DEFAULT_MODEL = "us.anthropic.claude-opus-4-6-v1"
+
+# --- API backend ------------------------------------------------------------
+# Two backends: AWS Bedrock (historical default) and the direct Anthropic
+# API on the resident's own subscription, authenticated with a Claude Code
+# OAuth token that tokeman keeps fresh in TOKEMAN_TOKENS_PATH (auth.py
+# re-reads it on 401). Select with CLAUDE_RESIDENT_BACKEND=oauth|bedrock.
+#
+# OAuth is currently OPT-IN, not the default: auth verified working
+# (2026-07-22), but Opus calls on bott@ember.software 429 with no ratelimit
+# headers — subscription plan/usage-window capacity, not a code issue. Flip
+# the default here once the sub reliably serves Opus.
+TOKEMAN_TOKENS_PATH = Path.home() / ".config" / "tokeman" / "tokens.toml"
+TOKEMAN_ACCOUNT = "bott@ember.software"
+OAUTH_BETA = "oauth-2025-04-20"  # required when authing with an OAuth token
+
+
+def _detect_backend() -> str:
+    forced = os.environ.get("CLAUDE_RESIDENT_BACKEND", "").lower()
+    if forced in ("bedrock", "oauth"):
+        return forced
+    return "bedrock"
+
+
+API_BACKEND = _detect_backend()
+
+# Model ids differ by backend: Bedrock uses inference-profile ids, the direct
+# API uses bare first-party ids (exact strings — no date suffixes, no
+# prefixes). Single source for every model-naming consumer: DEFAULT_MODEL,
+# the judge, session summaries, and the invoke_model aliases.
+_MODEL_IDS_BY_BACKEND = {
+    "bedrock": {
+        "opus": "us.anthropic.claude-opus-4-6-v1",
+        "sonnet": "us.anthropic.claude-sonnet-4-6",
+        "haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    },
+    "oauth": {
+        "opus": "claude-opus-4-6",
+        "sonnet": "claude-sonnet-4-6",
+        "haiku": "claude-haiku-4-5",
+    },
+}
+MODEL_IDS = _MODEL_IDS_BY_BACKEND[API_BACKEND]
+DEFAULT_MODEL = MODEL_IDS["opus"]
+JUDGE_MODEL = MODEL_IDS["haiku"]
 
 # Anthropic beta headers attached to every API call (via default_headers on
-# the Bedrock client). extended-cache-ttl enables the 1-hour prompt-cache TTL
-# used by CACHE_TTL below; if Bedrock/the model doesn't honor it, it silently
-# falls back to the 5-minute cache (no breakage). To revert caching changes
-# entirely: set this back to [] and CACHE_TTL = "5m".
+# whichever client auth.py builds; the OAuth backend adds OAUTH_BETA too).
+# extended-cache-ttl enables the 1-hour prompt-cache TTL used by CACHE_TTL
+# below; if the backend doesn't honor it, it silently falls back to the
+# 5-minute cache (no breakage). To revert caching changes entirely: set this
+# back to [] and CACHE_TTL = "5m".
 ANTHROPIC_BETAS: list[str] = ["extended-cache-ttl-2025-04-11"]
 
 # Prompt-cache lifetime for the stable prefix (system tiers + conversation
@@ -116,7 +161,7 @@ CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
 # plus one-liners from elsewhere. Summaries are written by Haiku from the
 # session's real message history (which includes tool calls and internal
 # monologue that exist nowhere else), falling back to a mechanical stub.
-SESSION_SUMMARY_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+SESSION_SUMMARY_MODEL = MODEL_IDS["haiku"]
 SESSIONS_DIR = "sessions"
 SESSION_SUMMARY_KEEP = 30          # per-topic file cap (jsonl lines)
 SESSION_SUMMARY_LOAD_TOPIC = 6     # full summaries loaded for this topic

@@ -306,6 +306,55 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "search_archive",
+        "description": (
+            "Search your api archive — the append-only foreverlog of every "
+            "API response you've ever produced. This is the ONLY record of "
+            "your past THINKING (internal monologue never reaches Zulip), "
+            "plus everything you said and every tool call. Use it to "
+            "recover your own past reasoning: 'what was I thinking when we "
+            "designed X', 'have I talked about Y before', 'what did I "
+            "decide about Z'. Regex, case-insensitive by default."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Python regex to search for."
+                },
+                "stream": {
+                    "type": "string",
+                    "description": "Optional exact stream filter (e.g. 'allgame', 'dm')."
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "Optional topic substring filter."
+                },
+                "since": {
+                    "type": "string",
+                    "description": "Optional ISO date lower bound, e.g. '2026-06-01'."
+                },
+                "until": {
+                    "type": "string",
+                    "description": "Optional ISO date upper bound (prefix match)."
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": {"type": "string",
+                              "enum": ["thinking", "text", "tool_use"]},
+                    "description": ("Which block kinds to search. Default: "
+                                    "all three.")
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 25, max 100)."
+                }
+            },
+            "required": ["pattern"]
+        }
+    },
+    {
         "name": "search_zulip_history",
         "description": (
             "Search Zulip's full message history via the API. "
@@ -360,7 +409,8 @@ TOOL_DEFINITIONS = [
             "Unix shell tools (Debian Bookworm). Use for actual computation: "
             "compiling Rust, running Python scripts, data processing, cryptanalysis, "
             "signal processing, plotting, or anything computable rather than inferable. "
-            "Has network access and ANTHROPIC_API_KEY. 2GB memory, 120s timeout. "
+            "Has network access but no API credentials (use invoke_model for "
+            "nested model calls). 2GB memory, 120s timeout. "
             "Files you provide are written to /workspace/ before the command runs. "
             "The workspace persists across multiple run_sandbox calls within one response. "
             "Returns stdout + stderr + listing of any files generated. "
@@ -551,7 +601,7 @@ TOOL_DEFINITIONS = [
         "name": "invoke_model",
         "description": (
             "Make a nested ('recursive') call to a Claude model through the "
-            "SAME Bedrock API you run on — so it is available whenever you are, "
+            "SAME API client you run on — so it is available whenever you are, "
             "unlike lm_studio (can be offline) or the sandbox (can run out of "
             "credits). This is your tool for delegating a sub-decision to "
             "another model: most importantly, BLIND sub-model calls when you "
@@ -585,8 +635,8 @@ TOOL_DEFINITIONS = [
                     "description": (
                         "Which model. Aliases: 'haiku' (fast/cheap), 'sonnet' "
                         "(default — the workhorse for blind GM calls), 'opus' "
-                        "(most capable). Or pass a full Bedrock inference-"
-                        "profile id. Defaults to 'sonnet'.")
+                        "(most capable). Or pass a full model id verbatim. "
+                        "Defaults to 'sonnet'.")
                 },
                 "max_tokens": {
                     "type": "integer",

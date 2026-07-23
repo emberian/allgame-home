@@ -4,6 +4,8 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from claude_resident.config import JUDGE_MODEL as _JUDGE_MODEL
+
 
 class EngagementJudge:
     """
@@ -18,7 +20,7 @@ class EngagementJudge:
     lurking until re-engaged.
     """
 
-    JUDGE_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    JUDGE_MODEL = _JUDGE_MODEL  # backend-appropriate Haiku id from config
 
     # The verdict tool: the judge ALWAYS records a YES/NO decision + reason,
     # and MAY leave a `remark` — a short aside, in its own voice, that gets
