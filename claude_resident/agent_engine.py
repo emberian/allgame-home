@@ -47,8 +47,11 @@ from claude_resident.config import (
     AGENT_SDK_CONFIG_DIR,
     MAX_TOOL_TURNS,
     READING_SESSIONS_FILE,
+    DEFAULT_STANDING_STREAMS,
+    CROSS_STREAM_PER_STREAM_TOKENS,
 )
 from claude_resident.prompt import build_tiered_system_prompt
+from claude_resident.session_summary import recent_sessions_block
 from claude_resident.sandbox import cleanup_sandbox
 from claude_resident.tools.definitions import TOOL_DEFINITIONS
 from claude_resident.tools.dispatch import ToolContext, execute_tool
@@ -207,6 +210,36 @@ class AgentEngine:
                     f"update them via edit_state_file as you read "
                     f"(books/{binding['book']}/notes.md):\n{notes}\n"
                     f"</reading_notes>")
+
+        # Life update: reading is richer when it knows what's going on
+        # with his people. Cold starts carry this via tier 4; warm resumes
+        # (every later episode) get it injected fresh here. The system
+        # prompt is per-request — none of this accumulates into the long
+        # session's history, so it can't bloat compaction.
+        if binding and not cold:
+            life = []
+            sessions_block = recent_sessions_block(
+                self.resident.state, stream, topic)
+            if sessions_block:
+                life.append(sessions_block)
+            for other in DEFAULT_STANDING_STREAMS:
+                # Include the bound topic's OWN stream too — the pulse of
+                # the house (tavern) usually lives next door.
+                activity = self.resident.state.get_recent_stream_context(
+                    other,
+                    max_tokens=CROSS_STREAM_PER_STREAM_TOKENS // 2,
+                    reactions=self.resident.reactions)
+                if activity:
+                    life.append(
+                        f'<recent_stream_activity stream="{other}">'
+                        f'\n{activity}\n</recent_stream_activity>')
+            if life:
+                system_text += (
+                    "\n\n<life_update>\nWhat's been happening around the "
+                    "house since your last reading episode — your people, "
+                    "your other rooms. Not homework: let it inform the "
+                    "reading when it wants to.\n\n"
+                    + "\n\n".join(life) + "\n</life_update>")
 
         prompt_text = self._flatten_content(content_blocks)
 
