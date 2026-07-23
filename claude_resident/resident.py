@@ -13,7 +13,8 @@ from claude_resident.config import (
     DEFAULT_MODEL, MAX_RESPONSE_TOKENS, THINKING_BUDGET,
     COOLDOWN_SECONDS, MAX_TOOL_TURNS, SESSION_MAX_TOKENS, MAX_STALE_FILES,
     SESSION_TRIM_PAIRS, TYPING_HOLDOFF_TIMEOUT, ALLGAME_CORE_FILES,
-    CACHE_TTL,
+    CACHE_TTL, BURST_SWEEP_ROUNDS, BURST_SWEEP_INTERVAL,
+    INTERIM_MESSAGES_MAX_CHARS,
 )
 from claude_resident.auth import refresh_oauth_token
 from claude_resident.state import StateManager
@@ -101,8 +102,18 @@ class ClaudeResident:
     # Message handling
     # ------------------------------------------------------------------
 
-    def handle_message(self, message: dict):
-        """Process an incoming Zulip message with per-topic session persistence."""
+    def handle_message(self, message: dict, followups: list | None = None,
+                       sweep=None):
+        """Process incoming message(s) with per-topic session persistence.
+
+        `followups` are additional messages from the SAME (stream, topic)
+        that stacked up behind the trigger; `sweep()` (provided by the event
+        loop) pulls in any more that arrive during the pre-response wait.
+        The whole batch lands in ONE turn: the model sees every message
+        labeled by sender and chooses the response shape itself — one reply,
+        several, or a reaction — instead of the harness forcing one full
+        response per queued message.
+        """
         msg_type = message.get("type", "stream")
         if msg_type == "stream":
             stream = message.get("display_recipient", "unknown")
@@ -111,47 +122,62 @@ class ClaudeResident:
             stream = "dm"
             topic = message.get("sender_email", "unknown")
 
-        sender = message.get("sender_full_name", "unknown")
-        content = message.get("content", "")
-        msg_id = message.get("id")
         timestamp = datetime.now(timezone.utc).isoformat()
+        bot_name = self.judge.bot_name
 
-        # Durable dedup: if we already handled this message in a prior run
-        # (or earlier this run via a duplicate event), never process it again.
-        # This is what keeps a restart/replay from re-responding to the last
-        # thing Claude already answered, regardless of who appears to be the
-        # "last speaker."
-        if msg_id and msg_id in self.handled:
-            self.logger.info(
-                f"Skipping #{stream}>{topic} from {sender}: already handled "
-                f"(msg {msg_id})")
+        def _prepare(m: dict) -> bool:
+            """Durable dedup + logging + indexing for one message. Returns
+            False when the message shouldn't ride in the batch (already
+            handled, or one of the resident's own echoes)."""
+            mid = m.get("id")
+            m_sender = m.get("sender_full_name", "unknown")
+            m_content = m.get("content", "")
+            if mid and mid in self.handled:
+                self.logger.info(
+                    f"Skipping #{stream}>{topic} from {m_sender}: already "
+                    f"handled (msg {mid})")
+                return False
+            if not (mid and mid in self._msg_index):
+                self.state.log_message(stream, topic, m_sender, m_content,
+                                       timestamp, msg_id=mid)
+            if mid:
+                self._msg_index[mid] = {
+                    "stream": stream, "topic": topic, "sender": m_sender,
+                    "preview": m_content[:80].replace("\n", " "),
+                }
+                self._cap_indexes()
+            if bot_name in m_sender.lower():
+                # Own echo — logged/indexed above if needed, never content.
+                self.handled.mark(mid)
+                return False
+            return True
+
+        batch = [m for m in [message, *(followups or [])] if _prepare(m)]
+        if not batch:
             return
 
-        # Skip logging if already indexed (e.g., from backfill/replay)
-        already_logged = msg_id and msg_id in self._msg_index
-        if not already_logged:
-            self.state.log_message(stream, topic, sender, content, timestamp,
-                                   msg_id=msg_id)
-
-        if msg_id:
-            self._msg_index[msg_id] = {
-                "stream": stream, "topic": topic, "sender": sender,
-                "preview": content[:80].replace("\n", " "),
-            }
-            self._cap_indexes()
-
-        if not self.judge.should_respond(message, stream):
+        # Judge scan: the first message that clears the judge is the trigger.
+        # Earlier ones are marked handled (judge-NO, same as before) but stay
+        # in the batch as conversational context; everything after the
+        # trigger rides along without its own judge pass — we're responding
+        # to the turn either way.
+        trigger_idx = None
+        judge_remark = ""
+        for i, m in enumerate(batch):
+            if self.judge.should_respond(m, stream):
+                trigger_idx = i
+                # Capture the System-1 remark now, before anything else can
+                # touch the judge.
+                judge_remark = getattr(self.judge, "last_remark", "") or ""
+                break
             self.logger.info(
-                f"Skipping #{stream}>{topic} from {sender}: "
-                f"{self.judge.last_reason}")
-            # Decided not to respond — record it so a restart doesn't
-            # re-litigate the same message through the judge.
-            self.handled.mark(msg_id)
+                f"Skipping #{stream}>{topic} from "
+                f"{m.get('sender_full_name', '?')}: {self.judge.last_reason}")
+            self.handled.mark(m.get("id"))
+        if trigger_idx is None:
             return
-
-        # The engagement judge (System 1) may have left a remark for Claude.
-        # Capture it now, before anything else can touch the judge.
-        judge_remark = getattr(self.judge, "last_remark", "") or ""
+        trigger = batch[trigger_idx]
+        sender = trigger.get("sender_full_name", "unknown")
 
         # --- Minimum pause before any visible action (typing indicator etc).
         # Gives the human a beat to see their own message land. ---
@@ -160,7 +186,22 @@ class ClaudeResident:
         # --- Typing hold-off: wait if someone is actively typing ---
         self._wait_for_typing(stream, topic)
 
-        self.logger.info(f"Responding to {sender} in #{stream}>{topic}")
+        # --- Burst sweep: gather messages that arrived while we waited (or
+        # while the previous response was generating). Finding new ones means
+        # the burst may still be live — pause a beat and sweep again. ---
+        if sweep is not None:
+            for _ in range(BURST_SWEEP_ROUNDS):
+                new = [m for m in (sweep() or []) if _prepare(m)]
+                if not new:
+                    break
+                batch.extend(new)
+                self.logger.info(
+                    f"Swept {len(new)} stacked message(s) into the turn")
+                time.sleep(BURST_SWEEP_INTERVAL)
+
+        self.logger.info(
+            f"Responding to {sender} in #{stream}>{topic}"
+            + (f" ({len(batch)} messages batched)" if len(batch) > 1 else ""))
 
         # --- Session lookup ---
         session = self.sessions.get(stream, topic)
@@ -168,8 +209,9 @@ class ClaudeResident:
         if is_first_message:
             session = self.sessions.create(stream, topic)
         session.touch()
-        session.message_count += 1
-        session.participants.add(sender)
+        session.message_count += len(batch)
+        for m in batch:
+            session.participants.add(m.get("sender_full_name", "unknown"))
 
         # --- Fingerprint current state ---
         new_fingerprints = fingerprint_state(self.state, stream, sender)
@@ -198,15 +240,39 @@ class ClaudeResident:
         # --- Build system prompt ---
         if is_first_message:
             system = build_tiered_system_prompt(
-                self.state, stream, topic, message,
+                self.state, stream, topic, trigger,
                 is_first_message=True, reactions=self.reactions)
             session.system_blocks = system
         else:
             system = session.system_blocks
 
         # --- Build user message ---
-        content_blocks = build_content_blocks(
-            f"{sender}: {content}", self.zulip)
+        batch_ids = [m.get("id") for m in batch if m.get("id")]
+        content_blocks = []
+        # Warm sessions never saw the chatter the judge declined between
+        # turns — surface it as labeled context so the conversation stays
+        # coherent. (Cold starts get it via topic history instead.)
+        if not is_first_message and session.last_seen_msg_id:
+            interim = self.state.get_topic_messages_since(
+                stream, topic, since_id=session.last_seen_msg_id,
+                exclude_ids=set(batch_ids), exclude_sender=bot_name,
+                max_chars=INTERIM_MESSAGES_MAX_CHARS)
+            if interim:
+                content_blocks.append({"type": "text", "text":
+                    "<interim_messages>\nSaid in this topic since your last "
+                    "turn (you already chose not to reply to these — context "
+                    "only):\n" + interim + "\n</interim_messages>"})
+        if len(batch) > 1:
+            content_blocks.append({"type": "text", "text":
+                f"[{len(batch)} messages arrived together — respond however "
+                f"fits: one reply, several, or a reaction.]"})
+        for m in batch:
+            content_blocks += build_content_blocks(
+                f"{m.get('sender_full_name', 'unknown')}: "
+                f"{m.get('content', '')}", self.zulip)
+        if batch_ids:
+            session.last_seen_msg_id = max(
+                [session.last_seen_msg_id, *batch_ids])
 
         if not is_first_message:
             delta_text = compute_state_deltas(
@@ -278,7 +344,7 @@ class ClaudeResident:
         try:
             internal_text, posted_ids = \
                 self._generate_response_with_tools_session(
-                    system, session, stream, topic, sender, message)
+                    system, session, stream, topic, sender, batch[-1])
         except Exception as e:
             self.logger.error(
                 f"Response generation failed: {e}", exc_info=True)
@@ -289,10 +355,11 @@ class ClaudeResident:
             self._send_typing(stream, topic, "stop")
 
         # The response turn completed (posted or deliberate silence) — record
-        # the triggering message as handled so a restart never replays it.
+        # every batched message as handled so a restart never replays them.
         # (On the exception path above we returned without marking, so a
         # crashed turn is still eligible for a retry on the next run.)
-        self.handled.mark(msg_id)
+        for mid in batch_ids:
+            self.handled.mark(mid)
 
         # Handle XML fallbacks (safety net for state updates)
         if internal_text and internal_text.strip():

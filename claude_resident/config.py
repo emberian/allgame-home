@@ -101,6 +101,16 @@ SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
 MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
 TYPING_HOLDOFF_TIMEOUT = 30  # max seconds to wait for someone to finish typing
 
+# Message batching: messages that stack up in a topic while the resident is
+# busy (or arrive in a quick burst) are gathered into ONE turn instead of
+# each triggering its own full response. After the cooldown/typing wait, the
+# event queue is swept for stragglers; if the sweep finds new messages the
+# burst may still be going, so wait BURST_SWEEP_INTERVAL and sweep again,
+# up to BURST_SWEEP_ROUNDS times.
+BURST_SWEEP_ROUNDS = 3
+BURST_SWEEP_INTERVAL = 2.0  # seconds between sweeps while a burst is live
+INTERIM_MESSAGES_MAX_CHARS = 4_000  # cap on the catch-up block per turn
+
 # Backfill — how much history to pull on boot
 BACKFILL_PER_STANDING_STREAM = 200
 BACKFILL_OTHER_STREAMS = 30         # for non-standing streams when enabled

@@ -241,6 +241,39 @@ class StateManager:
             formatted.append(text)
         return "\n".join(formatted)
 
+    def get_topic_messages_since(self, stream: str, topic: str,
+                                 since_id: int,
+                                 exclude_ids: set | None = None,
+                                 exclude_sender: str = "",
+                                 max_chars: int = 4_000) -> str:
+        """Messages in a topic newer than since_id — the chatter a warm
+        session never saw because the judge declined it. Formatted lines,
+        oldest first, capped from the tail."""
+        safe_stream = safe_filename(stream)
+        safe_topic = safe_filename(topic) if topic else "_notopic"
+        path = self.root / f"channels/{safe_stream}/{safe_topic}.jsonl"
+        if not path.exists():
+            return ""
+        exclude_ids = exclude_ids or set()
+        lines = []
+        for line in path.read_text().strip().split("\n"):
+            try:
+                m = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            mid = m.get("msg_id")
+            if not mid or mid <= since_id or mid in exclude_ids:
+                continue
+            sender = m.get("sender", "?")
+            if exclude_sender and exclude_sender in sender.lower():
+                continue
+            content = self._strip_zulip_quotes(m.get("content", ""))
+            lines.append(f"[{m.get('ts', '')[:16]}] {sender}: {content}")
+        text = "\n".join(lines)
+        if len(text) > max_chars:
+            text = "[…earlier interim messages elided…]\n" + text[-max_chars:]
+        return text
+
     @staticmethod
     def _strip_zulip_quotes(content: str) -> str:
         """Strip Zulip quote-reply blocks to avoid duplicating context."""

@@ -23,6 +23,7 @@ class ConversationSession:
     estimated_message_tokens: int = 0
     send_word_counts: list = field(default_factory=list)  # word counts of send_message calls
     participants: set = field(default_factory=set)  # senders seen this session
+    last_seen_msg_id: int = 0  # newest channel msg id already in this session's context
 
     def touch(self):
         self.last_active = time.time()

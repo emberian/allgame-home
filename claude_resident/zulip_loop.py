@@ -4,6 +4,7 @@ import sys
 import json
 import time
 import logging
+from collections import deque
 from datetime import datetime, timezone
 
 from claude_resident.config import (
@@ -22,6 +23,15 @@ from claude_resident.tools.postmark_tools import start_postmark_refresher
 from claude_resident.util import safe_filename
 
 logger = logging.getLogger("zulip_loop")
+
+
+def _msg_key(message: dict) -> tuple[str, str]:
+    """The (stream, topic) a message belongs to — mirrors handle_message's
+    routing so batching groups exactly what would share a session."""
+    if message.get("type", "stream") == "stream":
+        return (message.get("display_recipient", "unknown"),
+                message.get("subject", ""))
+    return ("dm", message.get("sender_email", "unknown"))
 
 
 def backfill_history(resident):
@@ -248,16 +258,23 @@ def replay_pending(resident):
         ordered.append(msg)
 
     logger.info(f"Replay: {len(ordered)} unreplied message(s)")
+    # Group same-topic messages into one batched turn — a downtime backlog
+    # should get one coherent response, not one full response per message.
+    groups: dict[tuple[str, str], list[dict]] = {}
+    group_order: list[tuple[str, str]] = []
     for msg in ordered:
-        is_dm = msg.get("type") == "private"
-        stream = "dm" if is_dm else msg.get("display_recipient", "?")
-        topic = msg.get("sender_email", "?") if is_dm else msg.get("subject", "?")
-        sender = msg.get("sender_full_name", "?")
-        logger.info(f"Replay: #{stream}>{topic} from {sender}")
+        key = _msg_key(msg)
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(msg)
+    for key in group_order:
+        msgs = groups[key]
+        logger.info(f"Replay: #{key[0]}>{key[1]} ({len(msgs)} message(s))")
         try:
-            resident.handle_message(msg)
+            resident.handle_message(msgs[0], followups=msgs[1:])
         except Exception as e:
-            logger.error(f"Replay error #{stream}>{topic}: {e}",
+            logger.error(f"Replay error #{key[0]}>{key[1]}: {e}",
                          exc_info=True)
 
 
@@ -322,56 +339,96 @@ def run(resident):
 
     logger.info(f"Registered event queue: {queue_id}")
 
+    # Message events are buffered here instead of dispatched one-by-one, so
+    # messages that stack up in a topic while a response is generating get
+    # coalesced into ONE turn (handle_message batch) instead of each getting
+    # its own full response. Reactions/typing still dispatch immediately.
+    pending: deque = deque()
+
+    def _route_event(event):
+        etype = event.get("type")
+        if etype == "message":
+            pending.append(event["message"])
+        elif etype == "reaction":
+            resident._handle_reaction_event(event)
+        elif etype == "typing":
+            resident._handle_typing_event(event)
+
+    def _fetch_events(block: bool):
+        nonlocal queue_id, last_event_id
+        events = resident.zulip.get_events(
+            queue_id=queue_id,
+            last_event_id=last_event_id,
+            dont_block=not block,
+        )
+        if events.get("result") != "success":
+            if events.get("code") == "BAD_EVENT_QUEUE_ID":
+                logger.warning("Event queue expired, re-registering...")
+                reg = resident.zulip.register(
+                    event_types=["message", "reaction", "typing"],
+                    narrow=[],
+                )
+                if reg.get("result") != "success":
+                    logger.error(f"Failed to re-register queue: {reg}")
+                    time.sleep(5)
+                    return
+                queue_id = reg["queue_id"]
+                last_event_id = reg["last_event_id"]
+                logger.info(f"Re-registered event queue: {queue_id}")
+                return
+            logger.error(f"Event fetch error: {events}")
+            if block:
+                time.sleep(5)
+            return
+        for event in events.get("events", []):
+            # Isolate each event: a failure routing one must not abort the
+            # rest. Advance last_event_id in finally so a poison event can't
+            # loop; the handled ledger + replay backstop hard crashes.
+            try:
+                _route_event(event)
+            except Exception as e:
+                logger.error(
+                    f"Error routing event {event.get('id')} "
+                    f"(type={event.get('type')}): {e}", exc_info=True)
+            finally:
+                last_event_id = max(last_event_id, event["id"])
+
+    def _take_matching(key) -> list[dict]:
+        """Pull every buffered message for this (stream, topic), preserving
+        order for both the matches and the messages left behind."""
+        matches = [m for m in pending if _msg_key(m) == key]
+        if matches:
+            rest = [m for m in pending if _msg_key(m) != key]
+            pending.clear()
+            pending.extend(rest)
+        return matches
+
+    def _sweep(key) -> list[dict]:
+        """Non-blocking queue check for stragglers in this topic — called by
+        handle_message after its cooldown/typing wait."""
+        try:
+            _fetch_events(block=False)
+        except Exception as e:
+            logger.debug(f"Sweep fetch failed: {e}")
+        return _take_matching(key)
+
     try:
         while True:
             try:
-                events = resident.zulip.get_events(
-                    queue_id=queue_id,
-                    last_event_id=last_event_id,
-                    dont_block=False,
-                )
-
-                if events.get("result") != "success":
-                    if events.get("code") == "BAD_EVENT_QUEUE_ID":
-                        logger.warning(
-                            "Event queue expired, re-registering...")
-                        result = resident.zulip.register(
-                            event_types=["message", "reaction", "typing"],
-                            narrow=[],
-                        )
-                        if result.get("result") != "success":
-                            logger.error(
-                                f"Failed to re-register queue: {result}")
-                            time.sleep(5)
-                            continue
-                        queue_id = result["queue_id"]
-                        last_event_id = result["last_event_id"]
-                        logger.info(
-                            f"Re-registered event queue: {queue_id}")
-                        continue
-                    logger.error(f"Event fetch error: {events}")
-                    time.sleep(5)
-                    continue
-
-                for event in events.get("events", []):
-                    # Isolate each event: a failure handling one must not abort
-                    # the rest of the batch (which would otherwise re-fetch and
-                    # risk re-processing). Advance last_event_id in finally so a
-                    # poison event can't loop, while the handled ledger + replay
-                    # still backstop anything dropped by a hard crash.
+                if not pending:
+                    _fetch_events(block=True)
+                if pending:
+                    msg = pending.popleft()
+                    key = _msg_key(msg)
+                    followups = _take_matching(key)
                     try:
-                        if event.get("type") == "message":
-                            resident.handle_message(event["message"])
-                        elif event.get("type") == "reaction":
-                            resident._handle_reaction_event(event)
-                        elif event.get("type") == "typing":
-                            resident._handle_typing_event(event)
+                        resident.handle_message(
+                            msg, followups=followups,
+                            sweep=lambda k=key: _sweep(k))
                     except Exception as e:
                         logger.error(
-                            f"Error handling event {event.get('id')} "
-                            f"(type={event.get('type')}): {e}", exc_info=True)
-                    finally:
-                        last_event_id = max(last_event_id, event["id"])
+                            f"Error handling message batch in "
+                            f"#{key[0]}>{key[1]}: {e}", exc_info=True)
 
                 if resident._restart_requested:
                     logger.info(
