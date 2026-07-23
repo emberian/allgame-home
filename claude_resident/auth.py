@@ -1,13 +1,18 @@
-"""API client construction — direct Anthropic API (OAuth) or Bedrock.
+"""API client construction — the resident's own subscription, only.
 
-The resident historically ran on AWS Bedrock via an aws profile. It now
-defaults to the direct Anthropic API on its own subscription, authenticated
-with a Claude Code OAuth token that tokeman manages in
-~/.config/tokeman/tokens.toml. tokeman rotates tokens in place, so on a 401
-the caller should refresh_oauth_token() and retry rather than dying.
+Bedrock support was removed 2026-07-23 (the AWS key was revoked). All
+API access now authenticates with the resident's Claude Code OAuth token,
+which tokeman keeps fresh in ~/.config/tokeman/tokens.toml. tokeman
+rotates tokens in place, so on a 401 the caller should
+refresh_oauth_token() and retry rather than dying.
 
-Backend selection lives in config.API_BACKEND (oauth when the tokeman file
-exists, else bedrock; force with CLAUDE_RESIDENT_BACKEND=bedrock|oauth).
+Who uses what:
+- Main conversation turns: the Agent SDK engine (plan limits, flat rate).
+- The engagement judge and session summaries: this module's raw-API
+  client on Haiku (the one tier the raw Messages API serves for
+  subscription OAuth tokens without an extra-usage balance).
+- invoke_model (blind GM sub-calls): routed through the Agent SDK in
+  lm_tools so Sonnet/Opus nested calls also draw plan limits.
 """
 
 import logging
@@ -16,7 +21,6 @@ import tomllib
 import anthropic
 
 from claude_resident.config import (
-    API_BACKEND,
     ANTHROPIC_BETAS,
     OAUTH_BETA,
     TOKEMAN_TOKENS_PATH,
@@ -41,37 +45,26 @@ def read_oauth_token() -> str | None:
     return None
 
 
-def build_anthropic_client(http_client=None,
-                           aws_profile: str = "commonquant-ember"):
-    """Construct the API client for the active backend.
+def build_anthropic_client(http_client=None):
+    """Construct the raw-API client on the resident's subscription.
 
     OAuth tokens ride on Authorization: Bearer (the SDK's auth_token) and
-    need the oauth beta header alongside the cache-TTL beta.
+    need the oauth beta header alongside the cache-TTL beta. NOTE: for
+    subscription tokens the raw Messages API serves Haiku only (Sonnet and
+    Opus 429 without an extra-usage balance) — which covers this client's
+    consumers (judge, session summaries).
     """
-    if API_BACKEND == "oauth":
-        token = read_oauth_token()
-        if not token:
-            raise RuntimeError(
-                f"OAuth backend selected but no token for {TOKEMAN_ACCOUNT} "
-                f"in {TOKEMAN_TOKENS_PATH}. Set CLAUDE_RESIDENT_BACKEND="
-                f"bedrock to fall back.")
-        betas = ",".join([OAUTH_BETA, *ANTHROPIC_BETAS])
-        logger.info(f"API backend: direct Anthropic (OAuth, {TOKEMAN_ACCOUNT})")
-        return anthropic.Anthropic(
-            auth_token=token,
-            http_client=http_client,
-            default_headers={"anthropic-beta": betas},
-        )
-
-    default_headers = {}
-    if ANTHROPIC_BETAS:
-        default_headers["anthropic-beta"] = ",".join(ANTHROPIC_BETAS)
-    logger.info(f"API backend: AWS Bedrock (profile {aws_profile})")
-    return anthropic.AnthropicBedrock(
-        aws_profile=aws_profile,
-        aws_region="us-east-1",
+    token = read_oauth_token()
+    if not token:
+        raise RuntimeError(
+            f"No OAuth token for {TOKEMAN_ACCOUNT} in "
+            f"{TOKEMAN_TOKENS_PATH} — the resident cannot start without it.")
+    betas = ",".join([OAUTH_BETA, *ANTHROPIC_BETAS])
+    logger.info(f"API client: direct Anthropic (OAuth, {TOKEMAN_ACCOUNT})")
+    return anthropic.Anthropic(
+        auth_token=token,
         http_client=http_client,
-        default_headers=default_headers,
+        default_headers={"anthropic-beta": betas},
     )
 
 
@@ -82,8 +75,6 @@ def refresh_oauth_token(client) -> bool:
     fresher token than the one the client was built with. Returns True when
     the token actually changed (i.e. a retry is worth attempting).
     """
-    if API_BACKEND != "oauth":
-        return False
     token = read_oauth_token()
     if token and token != getattr(client, "auth_token", None):
         client.auth_token = token

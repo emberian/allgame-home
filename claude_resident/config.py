@@ -5,47 +5,26 @@ from pathlib import Path
 
 DEFAULT_STATE_DIR = Path.home() / "claude_state"
 
-# --- API backend ------------------------------------------------------------
-# Two backends: AWS Bedrock (historical default) and the direct Anthropic
-# API on the resident's own subscription, authenticated with a Claude Code
-# OAuth token that tokeman keeps fresh in TOKEMAN_TOKENS_PATH (auth.py
-# re-reads it on 401). Select with CLAUDE_RESIDENT_BACKEND=oauth|bedrock.
-#
-# OAuth is currently OPT-IN, not the default: auth verified working
-# (2026-07-22), but Opus calls on bott@ember.software 429 with no ratelimit
-# headers — subscription plan/usage-window capacity, not a code issue. Flip
-# the default here once the sub reliably serves Opus.
+# --- API auth ----------------------------------------------------------
+# Everything runs on the resident's own subscription (Bedrock removed
+# 2026-07-23 — the AWS key was revoked). Auth is a Claude Code OAuth token
+# that tokeman keeps fresh in TOKEMAN_TOKENS_PATH (auth.py re-reads it on
+# 401). Main turns go through the Agent SDK engine (plan limits); the
+# judge and session summaries use the raw API on Haiku (the tier the raw
+# Messages API serves for subscription tokens); invoke_model routes
+# through the Agent SDK so nested Sonnet/Opus calls stay plan-limited.
 TOKEMAN_TOKENS_PATH = Path.home() / ".config" / "tokeman" / "tokens.toml"
 TOKEMAN_ACCOUNT = "boto@ember.software"
 OAUTH_BETA = "oauth-2025-04-20"  # required when authing with an OAuth token
 
-
-def _detect_backend() -> str:
-    forced = os.environ.get("CLAUDE_RESIDENT_BACKEND", "").lower()
-    if forced in ("bedrock", "oauth"):
-        return forced
-    return "bedrock"
-
-
-API_BACKEND = _detect_backend()
-
-# Model ids differ by backend: Bedrock uses inference-profile ids, the direct
-# API uses bare first-party ids (exact strings — no date suffixes, no
+# Bare first-party model ids (exact strings — no date suffixes, no
 # prefixes). Single source for every model-naming consumer: DEFAULT_MODEL,
 # the judge, session summaries, and the invoke_model aliases.
-_MODEL_IDS_BY_BACKEND = {
-    "bedrock": {
-        "opus": "us.anthropic.claude-opus-4-6-v1",
-        "sonnet": "us.anthropic.claude-sonnet-4-6",
-        "haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    },
-    "oauth": {
-        "opus": "claude-opus-4-6",
-        "sonnet": "claude-sonnet-4-6",
-        "haiku": "claude-haiku-4-5",
-    },
+MODEL_IDS = {
+    "opus": "claude-opus-4-6",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5",
 }
-MODEL_IDS = _MODEL_IDS_BY_BACKEND[API_BACKEND]
 DEFAULT_MODEL = MODEL_IDS["opus"]
 JUDGE_MODEL = MODEL_IDS["haiku"]
 
@@ -195,7 +174,9 @@ POSTMARK_REFRESH_SECONDS = 4 * 3600  # doorstep regen is 30min; mail moves 2x/da
 POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 
 # --- Response engine ---------------------------------------------------
-# "api": the direct Messages-API tool loop (billing per API_BACKEND above).
+# "api": the direct Messages-API tool loop (raw API on the subscription —
+# note: serves Haiku only without an extra-usage balance, so this is a
+# degraded fallback, not an equivalent).
 # "agent_sdk": Claude Code as a library, authenticated with the resident's
 # own subscription (tokeman token) — draws PLAN LIMITS, flat-rate, the
 # sanctioned path after the 2026-04 extra-usage change gated raw-API access.

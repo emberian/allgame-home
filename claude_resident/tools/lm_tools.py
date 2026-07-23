@@ -1,40 +1,77 @@
-"""Recursive language-model invocation through the resident's own client.
+"""Recursive language-model invocation on the resident's own subscription.
 
-`invoke_model` lets the resident make a nested model call over the exact
-API client it itself runs on (OAuth or Bedrock — see auth.py). Because it's the same API path
-that keeps the resident alive, it's available whenever the resident is —
-unlike `lm_studio` (the local server can be offline) or the sandbox (which
-can run out of API credits). That availability is the whole point: the GM's
-blind sub-model calls (e.g. handing a faction's situation to a fresh Sonnet
-that sees only the given prompt) must not silently degrade to "the GM
-reasoned it out himself" when an external path is down.
+`invoke_model` lets the resident make a nested model call. It routes
+through the Claude Agent SDK (a one-shot, tool-less Claude Code turn) so
+the sub-call draws PLAN LIMITS like the resident's own turns — the raw
+Messages API only serves Haiku for subscription OAuth tokens, which would
+have silently limited blind GM calls to the smallest model.
+
+The sub-model gets a CLEAN context: only the provided `system` + `prompt`.
+No channel history, no memory of prior invocations — which is exactly what
+makes a blind GM delegation blind.
 """
 
+import asyncio
 import logging
 
-from claude_resident.config import MODEL_IDS
+from claude_resident.config import (
+    MODEL_IDS,
+    AGENT_SDK_CONFIG_DIR,
+)
 
 logger = logging.getLogger("tools.lm")
 
-# Backend-appropriate model ids from config (bare first-party ids on the
-# OAuth backend, inference-profile ids on Bedrock). The model arg also
-# accepts any full model id verbatim.
+# Bare first-party model ids from config. The model arg also accepts any
+# full model id verbatim.
 MODEL_ALIASES = dict(MODEL_IDS)
 
 MAX_TOKENS_CAP = 8192
 
 
+async def _sdk_oneshot(prompt: str, system: str, model: str,
+                       max_tokens: int) -> tuple[str, str]:
+    """One tool-less Claude Code turn. Returns (text, meta)."""
+    from claude_agent_sdk import (ClaudeAgentOptions, AssistantMessage,
+                                  ResultMessage, query)
+    from claude_resident.auth import read_oauth_token
+
+    options = ClaudeAgentOptions(
+        system_prompt=system or None,
+        model=model,
+        max_turns=1,
+        tools=[],
+        permission_mode="bypassPermissions",
+        setting_sources=[],
+        cwd=str(AGENT_SDK_CONFIG_DIR),
+        env={
+            "CLAUDE_CODE_OAUTH_TOKEN": read_oauth_token() or "",
+            "CLAUDE_CONFIG_DIR": str(AGENT_SDK_CONFIG_DIR),
+            "ANTHROPIC_API_KEY": "",
+        },
+    )
+    texts: list[str] = []
+    meta = f"[model={model}"
+    async for msg in query(prompt=prompt, options=options):
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                text = getattr(block, "text", None)
+                if text:
+                    texts.append(text)
+        elif isinstance(msg, ResultMessage):
+            usage = msg.usage or {}
+            if isinstance(usage, dict):
+                meta += (f", tokens={usage.get('input_tokens', '?')}in/"
+                         f"{usage.get('output_tokens', '?')}out")
+            if msg.is_error:
+                raise RuntimeError(f"sub-model error: {msg.result!r}")
+    meta += "]"
+    # Note: max_tokens is advisory here (the SDK doesn't cap per-turn
+    # output); prompts should ask for bounded responses.
+    return "\n".join(texts).strip(), meta
+
+
 def invoke_model(inp: dict, anthropic_client, default_model: str) -> dict:
-    """Run a nested Claude call. Returns {"content": str[, "is_error": True]}.
-
-    The sub-model receives a CLEAN context: only the provided `system` +
-    `prompt`. No channel history, no memory of prior invocations — which is
-    exactly what makes a blind GM delegation blind.
-    """
-    if anthropic_client is None:
-        return {"content": "No model client available for invoke_model.",
-                "is_error": True}
-
+    """Run a nested Claude call. Returns {"content": str[, "is_error": True]}."""
     prompt = (inp.get("prompt") or "").strip()
     if not prompt:
         return {"content": "No prompt provided.", "is_error": True}
@@ -50,32 +87,8 @@ def invoke_model(inp: dict, anthropic_client, default_model: str) -> dict:
     max_tokens = max(1, min(max_tokens, MAX_TOKENS_CAP))
 
     try:
-        temperature = float(inp.get("temperature", 1.0))
-    except (TypeError, ValueError):
-        temperature = 1.0
-    temperature = max(0.0, min(temperature, 1.0))
-
-    kwargs = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if system:
-        kwargs["system"] = system
-
-    try:
-        resp = anthropic_client.messages.create(**kwargs)
-        text = "".join(
-            getattr(b, "text", "") for b in resp.content
-            if getattr(b, "type", None) == "text").strip()
-        usage = getattr(resp, "usage", None)
-        meta_bits = [f"model={model}"]
-        if usage is not None:
-            meta_bits.append(
-                f"tokens={getattr(usage, 'input_tokens', '?')}in/"
-                f"{getattr(usage, 'output_tokens', '?')}out")
-        meta = "[" + ", ".join(meta_bits) + "]"
+        text, meta = asyncio.run(
+            _sdk_oneshot(prompt, system, model, max_tokens))
         logger.info(f"invoke_model {meta}")
         if not text:
             return {"content": f"(sub-model returned no text)\n{meta}"}
@@ -84,5 +97,5 @@ def invoke_model(inp: dict, anthropic_client, default_model: str) -> dict:
         return {"content": (
             f"invoke_model failed for '{model}': {e}\n"
             f"Known aliases: {', '.join(sorted(MODEL_ALIASES))}. "
-            f"You can also pass a full Bedrock inference-profile id."),
+            f"You can also pass a full model id."),
             "is_error": True}

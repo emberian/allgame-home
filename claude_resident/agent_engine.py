@@ -217,6 +217,12 @@ class AgentEngine:
             setting_sources=[],  # never load the host user's CLAUDE.md
             resume=session.sdk_session_id or None,
             cwd=str(AGENT_SDK_CONFIG_DIR),
+            # Tool results carrying base64 images (fetch_url on a posted
+            # picture ≈ 6.7MB of JSON) blow the SDK's 1MB default read
+            # buffer and kill the turn ("JSON message exceeded maximum
+            # buffer size", 2026-07-23). Size for the largest legitimate
+            # payload with headroom.
+            max_buffer_size=32_000_000,
             env={
                 "CLAUDE_CODE_OAUTH_TOKEN": token,
                 "CLAUDE_CONFIG_DIR": str(AGENT_SDK_CONFIG_DIR),

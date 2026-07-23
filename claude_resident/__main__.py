@@ -29,8 +29,6 @@ def main():
     parser.add_argument("--standing-streams", nargs="+",
                         default=DEFAULT_STANDING_STREAMS,
                         help="Streams where Claude has standing interest")
-    parser.add_argument("--aws-profile", default="commonquant-ember",
-                        help="AWS profile for Bedrock API access")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Enable debug logging")
     parser.add_argument("--reflect", action="store_true",
@@ -134,8 +132,7 @@ def _run_directly(args):
     debug_hook = _setup_debug_log()
     http_client = httpx.Client(
         event_hooks={"response": [debug_hook]})
-    anthropic_client = build_anthropic_client(
-        http_client=http_client, aws_profile=args.aws_profile)
+    anthropic_client = build_anthropic_client(http_client=http_client)
     state = StateManager(args.state_dir)
 
     bot_profile = zulip_client.get_profile()

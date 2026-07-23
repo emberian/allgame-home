@@ -45,8 +45,8 @@ class ToolContext:
         self.topic = topic
         self.sender = sender
         self.message = message
-        # For recursive model invocation (invoke_model) — the same Bedrock
-        # client the resident itself runs on.
+        # Raw-API client on the resident's subscription (judge/summaries
+        # tier; invoke_model routes through the Agent SDK instead).
         self.anthropic = anthropic_client
         self.default_model = default_model
         self.restart_requested = False
