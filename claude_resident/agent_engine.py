@@ -53,6 +53,19 @@ from claude_resident.tools.dispatch import ToolContext, execute_tool
 
 logger = logging.getLogger("agent_engine")
 
+# Engine-specific realities appended to the system prompt each turn — the
+# base SYSTEM_PROMPT stays single-source for both engines.
+ENGINE_ADDENDUM = """
+## Engine notes (Claude Code loop)
+- One reply is ONE send_message call. After your visible action(s), end
+  the turn. Posting a second variant/rephrasing of the same reply is a
+  bug, not diligence — the "at least one visible action" rule means one
+  per TURN, not one per tool result.
+- Images and PDFs posted in chat arrive as links in the message text.
+  To actually SEE one, call fetch_url on the link (including
+  /user_uploads/... paths) — it comes back as real visual input.
+- Text you write between tool calls stays internal, as always."""
+
 
 def _mcp_result(result: dict) -> dict:
     """Convert an execute_tool result to MCP tool-result content."""
@@ -134,7 +147,8 @@ class AgentEngine:
         system_blocks = build_tiered_system_prompt(
             self.resident.state, stream, topic, trigger,
             is_first_message=cold, reactions=self.resident.reactions)
-        system_text = "\n\n".join(b["text"] for b in system_blocks)
+        system_text = ("\n\n".join(b["text"] for b in system_blocks)
+                       + "\n" + ENGINE_ADDENDUM)
 
         prompt_text = self._flatten_content(content_blocks)
 

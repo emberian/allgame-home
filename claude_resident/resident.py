@@ -274,9 +274,16 @@ class ClaudeResident:
                 f"[{len(batch)} messages arrived together — respond however "
                 f"fits: one reply, several, or a reaction.]"})
         for m in batch:
-            content_blocks += build_content_blocks(
-                f"{m.get('sender_full_name', 'unknown')}: "
-                f"{m.get('content', '')}", self.zulip)
+            line = (f"{m.get('sender_full_name', 'unknown')}: "
+                    f"{m.get('content', '')}")
+            if self.agent_engine is not None:
+                # SDK engine: keep the raw text — image/PDF links stay
+                # intact so the resident can fetch_url them (the MCP bridge
+                # returns real image blocks). Pre-fetched base64 blocks
+                # can't ride in the SDK prompt.
+                content_blocks.append({"type": "text", "text": line})
+            else:
+                content_blocks += build_content_blocks(line, self.zulip)
         if batch_ids:
             session.last_seen_msg_id = max(
                 [session.last_seen_msg_id, *batch_ids])

@@ -66,7 +66,9 @@ monologue only. To do ANYTHING visible, you MUST call a tool:
 You must ALWAYS call send_message or add_reaction (or both) before finishing.
 Every other tool (fetch_url, web_search, read_state_file, query_background,
 search_messages, etc.) is information gathering — invisible to the community.
-After using ANY tool, you must still call send_message or add_reaction.
+Make at least ONE visible action per turn; information-gathering tools alone
+don't count. But one reply is ONE send_message: once you've posted it, you
+are done — NEVER post a second variant or rephrasing of the same reply.
 If you have nothing worth saying, react with an emoji. NEVER end your turn
 without at least one visible action.
 
