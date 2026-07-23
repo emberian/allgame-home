@@ -16,7 +16,7 @@ DEFAULT_STATE_DIR = Path.home() / "claude_state"
 # headers — subscription plan/usage-window capacity, not a code issue. Flip
 # the default here once the sub reliably serves Opus.
 TOKEMAN_TOKENS_PATH = Path.home() / ".config" / "tokeman" / "tokens.toml"
-TOKEMAN_ACCOUNT = "bott@ember.software"
+TOKEMAN_ACCOUNT = "boto@ember.software"
 OAUTH_BETA = "oauth-2025-04-20"  # required when authing with an OAuth token
 
 
@@ -201,7 +201,9 @@ POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 # sanctioned path after the 2026-04 extra-usage change gated raw-API access.
 # The resident's tool surface is identical in both engines (his 28 jailed
 # tools via an in-process MCP server; Claude Code's host tools disabled).
-RESPONSE_ENGINE = os.environ.get("CLAUDE_RESIDENT_ENGINE", "api")
+# agent_sdk is the DEFAULT since 2026-07-22; set CLAUDE_RESIDENT_ENGINE=api
+# to fall back to the metered Messages-API loop.
+RESPONSE_ENGINE = os.environ.get("CLAUDE_RESIDENT_ENGINE", "agent_sdk")
 AGENT_SDK_MODEL = "claude-opus-4-6"
 AGENT_SDK_FALLBACK_MODEL = "claude-sonnet-4-6"  # plan window exhausted → degrade, don't die
 AGENT_SDK_CONFIG_DIR = DEFAULT_STATE_DIR / ".claude_sdk"  # his own Claude Code home
