@@ -27,6 +27,7 @@ Design invariants:
 
 import json
 import asyncio
+import difflib
 import logging
 from datetime import datetime, timezone
 
@@ -55,16 +56,27 @@ logger = logging.getLogger("agent_engine")
 
 # Engine-specific realities appended to the system prompt each turn — the
 # base SYSTEM_PROMPT stays single-source for both engines.
+#
+# The closing-text rule exists because the Claude Code loop injects
+# "[Your previous response had no visible output. Please continue...]"
+# whenever a response ends on a bare tool call — which, combined with the
+# base prompt's "text is invisible" framing, produced an infinite re-send
+# loop (the 2026-07-23 duplicate-spam incident, self-diagnosed by the
+# resident from inside the loop).
 ENGINE_ADDENDUM = """
-## Engine notes (Claude Code loop)
-- One reply is ONE send_message call. After your visible action(s), end
-  the turn. Posting a second variant/rephrasing of the same reply is a
-  bug, not diligence — the "at least one visible action" rule means one
-  per TURN, not one per tool result.
+## Engine notes (Claude Code loop) — IMPORTANT mechanics
+- One reply is ONE send_message call. Never post a second variant or
+  rephrasing of the same reply.
+- After your tool calls, ALWAYS end the turn with a short plain-text line
+  (even just "posted."). That text is NOT shown to the community — but
+  this engine needs closing text to end a turn cleanly; ending on a bare
+  tool call makes the loop nag you that there was "no visible output".
+- If you ever see "[Your previous response had no visible output...]":
+  your send DID land — do NOT send again. Write a one-line closing text
+  and the turn will end.
 - Images and PDFs posted in chat arrive as links in the message text.
   To actually SEE one, call fetch_url on the link (including
-  /user_uploads/... paths) — it comes back as real visual input.
-- Text you write between tool calls stays internal, as always."""
+  /user_uploads/... paths) — it comes back as real visual input."""
 
 
 def _mcp_result(result: dict) -> dict:
@@ -100,6 +112,7 @@ class AgentEngine:
     def __init__(self, resident):
         self.resident = resident
         self._ctx: ToolContext | None = None  # active turn's tool context
+        self._turn_sends: list[str] = []  # contents posted this turn
         self._server = self._build_server()
         AGENT_SDK_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         logger.info(
@@ -124,8 +137,29 @@ class AgentEngine:
             def _make(name):
                 @tool(name, tdef["description"], tdef["input_schema"])
                 async def _handler(args):
+                    args = args or {}
+                    # Duplicate-send guard (the resident's own suggested
+                    # fix, filed from inside the loop): if this turn
+                    # already posted near-identical content, refuse the
+                    # re-send and tell him how to end the turn instead.
+                    if name in ("send_message", "send_dm"):
+                        content = str(args.get("content", ""))
+                        for prev in self._turn_sends:
+                            if difflib.SequenceMatcher(
+                                    None, prev, content).ratio() > 0.85:
+                                return {"content": [{"type": "text", "text":
+                                    "Duplicate suppressed: you already "
+                                    "posted essentially this reply THIS "
+                                    "turn, and it landed. Do NOT re-send. "
+                                    "End the turn with a brief plain-text "
+                                    "line instead."}], "is_error": True}
+                        result = await asyncio.to_thread(
+                            execute_tool, name, args, self._ctx)
+                        if not result.get("is_error"):
+                            self._turn_sends.append(content)
+                        return _mcp_result(result)
                     result = await asyncio.to_thread(
-                        execute_tool, name, args or {}, self._ctx)
+                        execute_tool, name, args, self._ctx)
                     return _mcp_result(result)
                 return _handler
             sdk_tools.append(_make(tdef["name"]))
@@ -152,6 +186,7 @@ class AgentEngine:
 
         prompt_text = self._flatten_content(content_blocks)
 
+        self._turn_sends = []
         ctx = ToolContext(
             state=self.resident.state,
             zulip_client=self.resident.zulip,

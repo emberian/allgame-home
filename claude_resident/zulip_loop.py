@@ -412,6 +412,12 @@ def run(resident):
             logger.debug(f"Sweep fetch failed: {e}")
         return _take_matching(key)
 
+    # Repeated-error dedup: a dead network grinds the loop every ~15s, and
+    # logging a full traceback each time once produced 190k log lines in a
+    # night. First occurrence gets the traceback; repeats get a one-line
+    # count every 40th (~10 min at outage cadence).
+    last_error = ["", 0]
+
     try:
         while True:
             try:
@@ -439,7 +445,15 @@ def run(resident):
             except KeyboardInterrupt:
                 raise
             except Exception as e:
-                logger.error(f"Unexpected error: {e}", exc_info=True)
+                sig = f"{type(e).__name__}: {e}"
+                if sig == last_error[0]:
+                    last_error[1] += 1
+                    if last_error[1] % 40 == 0:
+                        logger.error(
+                            f"Still failing ({last_error[1]}x): {sig[:200]}")
+                else:
+                    last_error[0], last_error[1] = sig, 1
+                    logger.error(f"Unexpected error: {e}", exc_info=True)
                 time.sleep(5)
     except KeyboardInterrupt:
         logger.info("Shutting down gracefully...")
