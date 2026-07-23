@@ -46,6 +46,7 @@ from claude_resident.config import (
     AGENT_SDK_FALLBACK_MODEL,
     AGENT_SDK_CONFIG_DIR,
     MAX_TOOL_TURNS,
+    READING_SESSIONS_FILE,
 )
 from claude_resident.prompt import build_tiered_system_prompt
 from claude_resident.sandbox import cleanup_sandbox
@@ -174,6 +175,16 @@ class AgentEngine:
         """Run one response turn. Mirrors the api engine's contract:
         returns (internal_text, posted_ids) and propagates tool side
         effects (send word counts, restart requests) the same way."""
+        # Bookread binding: a bound topic resumes its stored Claude Code
+        # session even when our ConversationSession has long expired —
+        # reading episodes days apart share one context window.
+        binding_key = f"{stream}|{topic}"
+        binding = self._load_bindings().get(binding_key)
+        if binding and binding.get("sdk_session_id") \
+                and not session.sdk_session_id:
+            session.sdk_session_id = binding["sdk_session_id"]
+            logger.info(f"Resuming bound reading session for {binding_key}")
+
         cold = not session.sdk_session_id
 
         # Same tier builder as the api engine: full context on cold start,
@@ -183,6 +194,19 @@ class AgentEngine:
             is_first_message=cold, reactions=self.resident.reactions)
         system_text = ("\n\n".join(b["text"] for b in system_blocks)
                        + "\n" + ENGINE_ADDENDUM)
+
+        # The bound book's notes ride in context every episode — durable
+        # memory that survives compaction of the long reading session.
+        if binding and binding.get("book"):
+            notes = self.resident.state.read_file(
+                f"books/{binding['book']}/notes.md")
+            if notes:
+                system_text += (
+                    f"\n\n<reading_notes book=\"{binding['book']}\">\n"
+                    f"Your own notes for the book bound to this topic — "
+                    f"update them via edit_state_file as you read "
+                    f"(books/{binding['book']}/notes.md):\n{notes}\n"
+                    f"</reading_notes>")
 
         prompt_text = self._flatten_content(content_blocks)
 
@@ -257,7 +281,40 @@ class AgentEngine:
             session.messages.append(
                 {"role": "assistant", "content": assistant_record})
 
+        # Persist the bound topic's session id so the long reading thread
+        # survives TTL expiry and harness restarts.
+        if binding is not None and session.sdk_session_id:
+            self._save_binding_session(binding_key, session.sdk_session_id)
+
         return internal_text, list(ctx.posted_ids)
+
+    # ------------------------------------------------------------------
+    # Bookread bindings (books/README.md documents the practice)
+    # ------------------------------------------------------------------
+
+    def _load_bindings(self) -> dict:
+        raw = self.resident.state.read_file(READING_SESSIONS_FILE)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError as e:
+            logger.warning(f"reading_sessions.json unparseable: {e}")
+            return {}
+
+    def _save_binding_session(self, key: str, sdk_session_id: str):
+        # Re-read before writing: the resident edits this file itself
+        # (adding/removing bindings), and its edits must not be clobbered.
+        bindings = self._load_bindings()
+        if key not in bindings:
+            return  # binding was removed mid-turn — respect that
+        if bindings[key].get("sdk_session_id") == sdk_session_id:
+            return
+        bindings[key]["sdk_session_id"] = sdk_session_id
+        self.resident.state.write_file(
+            READING_SESSIONS_FILE, json.dumps(bindings, indent=1) + "\n")
+        logger.info(f"Bound reading session updated for {key}")
 
     async def _run_turn(self, prompt_text: str, options, session,
                         stream: str, topic: str, sender: str):

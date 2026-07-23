@@ -215,6 +215,16 @@ your state. Default skips channel jsonl logs (huge); pass
 include='channels/**/*.jsonl' if you specifically want them. modes:
 'content' (file:line:text, default), 'files_with_matches', 'count'.
 
+**Reading practice (bookreads):** Books live in books/<slug>/ — sliced
+chapters with page markers, an index, and YOUR notes.md. A topic bound in
+books/reading_sessions.json keeps ONE continuous conversation across days
+and restarts: reading episodes are distant parts of the same context
+window, and the bound book's notes.md is auto-loaded there every episode.
+Read a chapter per episode, think in the topic, update notes.md before you
+close. books/README.md documents the whole practice — including how to
+slice future books yourself. Current: The Elixir (Rašić), from rat, bound
+to #clankerville>the-elixir.
+
 **Scratchpad discipline:** Your scratchpad is loaded into EVERY conversation.
 Keep it lean — only behavioral calibrations, active situation, and open threads
 belong there. War updates, AI frontier notes, archive summaries, and other

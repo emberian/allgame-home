@@ -190,6 +190,14 @@ AGENT_SDK_FALLBACK_MODEL = "claude-sonnet-4-6"  # plan window exhausted → degr
 AGENT_SDK_CONFIG_DIR = DEFAULT_STATE_DIR / ".claude_sdk"  # his own Claude Code home
                                                           # (sessions/transcripts persist here)
 
+# Bookreads: topics bound in this state file keep ONE continuous Claude
+# Code session across days, TTL expiries, and harness restarts — reading
+# episodes become distant parts of the same context window (compaction
+# handles length), and the bound book's notes.md is loaded into context
+# every episode. The resident manages bindings itself by editing the file;
+# the harness only fills in sdk_session_id. See books/README.md.
+READING_SESSIONS_FILE = "books/reading_sessions.json"
+
 # Streams where Claude has standing interest (will read ambient conversation).
 DEFAULT_STANDING_STREAMS = [
     "allgame",       # the main stream — all topics within it
