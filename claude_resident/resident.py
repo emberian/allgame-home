@@ -14,7 +14,7 @@ from claude_resident.config import (
     COOLDOWN_SECONDS, MAX_TOOL_TURNS, SESSION_MAX_TOKENS, MAX_STALE_FILES,
     SESSION_TRIM_PAIRS, TYPING_HOLDOFF_TIMEOUT, ALLGAME_CORE_FILES,
     CACHE_TTL, BURST_SWEEP_ROUNDS, BURST_SWEEP_INTERVAL,
-    INTERIM_MESSAGES_MAX_CHARS,
+    INTERIM_MESSAGES_MAX_CHARS, RESPONSE_ENGINE,
 )
 from claude_resident.auth import refresh_oauth_token
 from claude_resident.state import StateManager
@@ -62,6 +62,13 @@ class ClaudeResident:
         self._last_session_activity = 0.0
         self._sandbox_dir = None
         self.sessions = SessionManager()
+        # Response engine: the api tool loop, or Claude Code as a library
+        # (plan-limits billing). Imported lazily so the api engine carries
+        # no SDK dependency at runtime.
+        self.agent_engine = None
+        if RESPONSE_ENGINE == "agent_sdk":
+            from claude_resident.agent_engine import AgentEngine
+            self.agent_engine = AgentEngine(self)
         self._metacog_runner = None
         self._restart_requested = False
         self.logger = logging.getLogger("claude_resident")
@@ -342,9 +349,14 @@ class ClaudeResident:
         typing_thread = threading.Thread(target=_typing_pulse, daemon=True)
         typing_thread.start()
         try:
-            internal_text, posted_ids = \
-                self._generate_response_with_tools_session(
-                    system, session, stream, topic, sender, batch[-1])
+            if self.agent_engine is not None:
+                internal_text, posted_ids = self.agent_engine.respond(
+                    session, stream, topic, sender, batch[-1],
+                    content_blocks)
+            else:
+                internal_text, posted_ids = \
+                    self._generate_response_with_tools_session(
+                        system, session, stream, topic, sender, batch[-1])
         except Exception as e:
             self.logger.error(
                 f"Response generation failed: {e}", exc_info=True)
