@@ -171,6 +171,14 @@ class AgentEngine:
             env={
                 "CLAUDE_CODE_OAUTH_TOKEN": token,
                 "CLAUDE_CONFIG_DIR": str(AGENT_SDK_CONFIG_DIR),
+                # The resident loads .env (ANTHROPIC_API_KEY for the sandbox
+                # and mirror council) and the SDK subprocess inherits the
+                # parent env — an API key SHADOWS the OAuth token and bills
+                # the console account instead of the subscription ("Credit
+                # balance is too low", 2026-07-22). Empty string makes the
+                # CLI fall through to the token; the key stays in os.environ
+                # for the tools that legitimately need it.
+                "ANTHROPIC_API_KEY": "",
             },
         )
 
