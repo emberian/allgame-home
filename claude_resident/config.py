@@ -163,7 +163,8 @@ CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
 # monologue that exist nowhere else), falling back to a mechanical stub.
 SESSION_SUMMARY_MODEL = MODEL_IDS["haiku"]
 SESSIONS_DIR = "sessions"
-SESSION_SUMMARY_KEEP = 30          # per-topic file cap (jsonl lines)
+# Session-note files are append-only foreverlogs (never trimmed — they're
+# history, like api_archive and deblog); only the recall is bounded:
 SESSION_SUMMARY_LOAD_TOPIC = 6     # full summaries loaded for this topic
 SESSION_SUMMARY_LOAD_GLOBAL = 12   # one-liners loaded from other topics
 SESSION_REAPER_INTERVAL = 120      # seconds between reaper sweeps

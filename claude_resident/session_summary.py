@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 from claude_resident.config import (
     SESSIONS_DIR,
     SESSION_SUMMARY_MODEL,
-    SESSION_SUMMARY_KEEP,
     SESSION_SUMMARY_LOAD_TOPIC,
     SESSION_SUMMARY_LOAD_GLOBAL,
     SESSION_REAPER_INTERVAL,
@@ -181,9 +180,11 @@ def store_summary(state, session, summary: str):
         "msgs": session.message_count,
         "summary": summary,
     }
+    # Append-only forever: session notes are the resident's history, like
+    # api_archive and deblog. Only the LOADING is bounded (last N recalled
+    # at cold start); the record itself is never trimmed.
     path = _summary_path(session.stream, session.topic)
     state.append_file(path, json.dumps(entry) + "\n")
-    state._trim_log(path, max_lines=SESSION_SUMMARY_KEEP)
 
 
 def _eligible(session) -> bool:

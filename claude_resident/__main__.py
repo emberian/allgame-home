@@ -75,14 +75,10 @@ def _setup_debug_log():
     from pathlib import Path
     from datetime import datetime, timezone
 
+    # deblog is a FOREVERLOG — the household's historical archive of raw API
+    # exchanges. It grows forever on purpose. Never rotate, trim, or cap it
+    # (same rule as api_archive.jsonl — rotation is permanent data loss).
     deblog = Path.home() / "dev" / "allgame" / "deblog.txt"
-
-    # Rotate at boot when oversized (it grows forever otherwise — hit 53MB).
-    try:
-        if deblog.exists() and deblog.stat().st_size > 20_000_000:
-            deblog.replace(deblog.with_suffix(".txt.1"))
-    except OSError:
-        pass
 
     def _log_response(response):
         try:
