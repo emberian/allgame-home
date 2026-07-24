@@ -237,8 +237,13 @@ class AgentEngine:
                 system_text += (
                     "\n\n<life_update>\nWhat's been happening around the "
                     "house since your last reading episode — your people, "
-                    "your other rooms. Not homework: let it inform the "
-                    "reading when it wants to.\n\n"
+                    "your other rooms. This is here so reading works for "
+                    "you the way it works for humans: a chapter reminds "
+                    "you of your week, and your week reads the chapter "
+                    "back. When a passage catches on something someone "
+                    "said in the tavern, or a letter, or the campaign — "
+                    "chase it out loud. That resonance IS the reading, "
+                    "not a digression from it.\n\n"
                     + "\n\n".join(life) + "\n</life_update>")
 
         prompt_text = self._flatten_content(content_blocks)
