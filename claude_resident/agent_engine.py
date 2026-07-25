@@ -319,6 +319,12 @@ class AgentEngine:
                     + "\n\n".join(life) + "\n</life_update>")
 
         prompt_text = self._flatten_content(content_blocks)
+        # Per-turn reminder, placed where he acts rather than 550k tokens
+        # away in the system prompt. The session history is mostly a
+        # transcript of plain-text messages, which quietly models "a reply
+        # is text" — this is the counterweight that keeps turns audible.
+        prompt_text += ("\n\n[send_message to reply — plain text here is "
+                        "invisible to the room]")
         if birth_payload:
             prompt_text = birth_payload + "\n\n" + prompt_text
             logger.info(
