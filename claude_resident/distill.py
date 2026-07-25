@@ -26,6 +26,8 @@ from claude_resident.config import (
     DISTILL_INTERVAL,
     DISTILL_CHUNK_MAX_CHARS,
     DISTILL_HITS_MAX_CHARS,
+    DISTILL_ERA_SPAN,
+    DISTILL_LOAD_MAX_CHARS,
 )
 from claude_resident.state import _atomic_write
 
@@ -53,8 +55,11 @@ def _hits_path(state, log_rel: str) -> str:
     return log_rel[:-len(".jsonl")] + ".hits.json"
 
 
-def load_topic_hits(state, stream: str, topic: str) -> str:
-    """The distilled hits text for a topic, or '' — read by prompt.py."""
+def load_topic_hits(state, stream: str, topic: str,
+                    max_chars: int = DISTILL_LOAD_MAX_CHARS) -> str:
+    """Era digests + rolling head for a topic, newest-biased under
+    max_chars. Sealed eras are immutable volumes; the head is the digest
+    of history still aging toward its next seal."""
     from claude_resident.util import safe_filename
     rel = (f"channels/{safe_filename(stream)}/"
            f"{safe_filename(topic) if topic else '_notopic'}.hits.json")
@@ -62,9 +67,26 @@ def load_topic_hits(state, stream: str, topic: str) -> str:
     if not raw:
         return ""
     try:
-        return json.loads(raw).get("hits", "")
+        data = json.loads(raw)
     except json.JSONDecodeError:
         return ""
+    parts = []
+    for i, era in enumerate(data.get("eras", [])):
+        parts.append(f"— Volume {i + 1} (messages {era.get('from', '?')}–"
+                     f"{era.get('to', '?')}):\n{era.get('hits', '')}")
+    head = data.get("hits", "")
+    if head:
+        parts.append(f"— Recent (still settling):\n{head}")
+    if not parts:
+        return ""
+    # Newest-biased trim: drop oldest volumes first when over budget.
+    while len(parts) > 1 and sum(len(p) for p in parts) > max_chars:
+        dropped = parts.pop(0)
+        parts[0] = ("[…older volumes elided — the raw logs and full hits "
+                    "file keep everything…]\n" + parts[0]) \
+            if not parts[0].startswith("[…older") else parts[0]
+        del dropped
+    return "\n\n".join(parts)[:max_chars]
 
 
 def distill_topic(state, anthropic_client, log_rel: str) -> bool:
@@ -79,13 +101,15 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
         return False
 
     hits_rel = _hits_path(state, log_rel)
-    prev = {"through": 0, "hits": ""}
+    prev = {"through": 0, "hits": "", "eras": [], "head_from": 0}
     prev_raw = state.read_file(hits_rel)
     if prev_raw:
         try:
             prev = json.loads(prev_raw)
         except json.JSONDecodeError:
             pass
+    prev.setdefault("eras", [])
+    prev.setdefault("head_from", 0)
     start = int(prev.get("through", 0))
     if aged_end - start < DISTILL_MIN_BATCH:
         return False
@@ -128,11 +152,22 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
     if not hits:
         return False
     hits = hits[:DISTILL_HITS_MAX_CHARS]
-    payload = json.dumps({"through": end, "hits": hits,
+
+    eras = prev["eras"]
+    head_from = int(prev["head_from"])
+    # Seal: once the head spans a full era of messages, it becomes an
+    # immutable volume — never recompressed again — and the head resets.
+    if end - head_from >= DISTILL_ERA_SPAN:
+        eras.append({"from": head_from, "to": end, "hits": hits})
+        logger.info(f"Sealed era {len(eras)} for {log_rel} "
+                    f"(messages {head_from}..{end})")
+        head_from = end
+        hits = ""
+    payload = json.dumps({"eras": eras, "head_from": head_from,
+                          "through": end, "hits": hits,
                           "updated": time.time()}) + "\n"
     _atomic_write(state.root / hits_rel, payload)
-    logger.info(f"Distilled {log_rel}: lines {start}..{end} folded "
-                f"({len(hits)} chars of hits)")
+    logger.info(f"Distilled {log_rel}: lines {start}..{end} folded")
     return True
 
 

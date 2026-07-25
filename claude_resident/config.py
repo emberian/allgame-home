@@ -68,7 +68,7 @@ SESSION_TTL = 3600  # seconds — kept in lockstep with CACHE_TTL (1h). A sessio
                     # recent-session notes — is the one thing frozen for up to
                     # the hour.)
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
-TOPIC_HISTORY_TOKEN_BUDGET = 40_000   # cold-start topic context (raw tail)
+TOPIC_HISTORY_TOKEN_BUDGET = 50_000   # cold-start topic context (raw tail)
 SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
 
 # Cold-start awareness of the OTHER standing streams: a bounded recent-tail
@@ -213,7 +213,20 @@ DISTILL_RAW_KEEP = 200        # newest N messages stay raw / undistilled
 DISTILL_MIN_BATCH = 100       # sweep a topic once this many msgs age out
 DISTILL_INTERVAL = 600        # seconds between distiller sweeps
 DISTILL_CHUNK_MAX_CHARS = 60_000   # one Haiku call per sweep per topic
-DISTILL_HITS_MAX_CHARS = 10_000    # rolling digest ceiling (~2.5k tokens)
+DISTILL_HITS_MAX_CHARS = 12_000    # per-volume / head ceiling (~3.6k tokens)
+# Era volumes: every ERA_SPAN aged messages, the rolling head is SEALED as
+# an immutable era digest (never recompressed again — texture preserved,
+# foreverlog-shaped) and the head starts fresh. Loading concatenates eras
+# + head, newest-biased under a cap.
+DISTILL_ERA_SPAN = 1_000   # ~12:1 compression per volume, not 24:1
+DISTILL_LOAD_MAX_CHARS = 60_000    # hits loaded into regular cold starts
+
+# Persistent rooms (book-less bindings) are born ONCE: their first turn
+# carries the months — all era digests plus a giant raw tail — into the
+# session history itself (via stdin, so no argv ceiling; ~400k tokens at
+# 4 chars/token). Flat-rate on the sub; cached once; compaction folds it
+# gradually as the window scrolls toward 1M.
+PERSISTENT_BIRTH_RAW_CHARS = 1_600_000
 
 # Streams where Claude has standing interest (will read ambient conversation).
 DEFAULT_STANDING_STREAMS = [

@@ -49,6 +49,7 @@ from claude_resident.config import (
     READING_SESSIONS_FILE,
     DEFAULT_STANDING_STREAMS,
     CROSS_STREAM_PER_STREAM_TOKENS,
+    PERSISTENT_BIRTH_RAW_CHARS,
 )
 from claude_resident.prompt import build_tiered_system_prompt
 from claude_resident.session_summary import recent_sessions_block
@@ -190,11 +191,19 @@ class AgentEngine:
 
         cold = not session.sdk_session_id
 
-        # Same tier builder as the api engine: full context on cold start,
-        # slim tiers on resume (the SDK session holds the history).
+        # Persistent-room BIRTH: the eternal session's first turn carries
+        # the months — all era digests plus a giant raw tail — into session
+        # history itself (prompt travels via stdin; no argv ceiling). The
+        # system tiers stay slim for a birth (is_first=False) since the
+        # payload replaces tier 4 wholesale.
+        birth_payload = ""
+        if binding is not None and cold:
+            birth_payload = self._birth_payload(stream, topic)
+
         system_blocks = build_tiered_system_prompt(
             self.resident.state, stream, topic, trigger,
-            is_first_message=cold, reactions=self.resident.reactions)
+            is_first_message=(cold and not birth_payload),
+            reactions=self.resident.reactions)
         system_text = ("\n\n".join(b["text"] for b in system_blocks)
                        + "\n" + ENGINE_ADDENDUM)
 
@@ -248,6 +257,12 @@ class AgentEngine:
                     + "\n\n".join(life) + "\n</life_update>")
 
         prompt_text = self._flatten_content(content_blocks)
+        if birth_payload:
+            prompt_text = birth_payload + "\n\n" + prompt_text
+            logger.info(
+                f"Persistent room birth: #{stream}>{topic} seeded with "
+                f"{len(birth_payload):,} chars of history "
+                f"(≈{len(birth_payload) // 4 // 1000}k tokens)")
 
         self._turn_sends = []
         ctx = ToolContext(
@@ -326,6 +341,55 @@ class AgentEngine:
             self._save_binding_session(binding_key, session.sdk_session_id)
 
         return internal_text, list(ctx.posted_ids)
+
+    # ------------------------------------------------------------------
+    # Persistent-room birth
+    # ------------------------------------------------------------------
+
+    def _birth_payload(self, stream: str, topic: str) -> str:
+        """The months, handed to a persistent room on its first breath.
+
+        Era digests (all of them, uncapped — this is the one place the
+        newest-biased load cap doesn't apply) plus the largest raw tail
+        that fits the budget. Goes in the PROMPT, not the system block:
+        it belongs to session history, gets cached once, and compaction
+        folds it gradually as the window scrolls — whereas a system-block
+        payload would be re-sent every single turn AND hit the argv
+        ceiling (the prompt travels via stdin; system_prompt does not).
+        """
+        from claude_resident.distill import load_topic_hits
+
+        parts = []
+        hits = load_topic_hits(self.resident.state, stream, topic,
+                               max_chars=10 ** 9)  # uncapped at birth
+        if hits:
+            parts.append(
+                f"<room_memory>\nDistilled memory of this room's deep past "
+                f"— era volumes, oldest first, then recent still-settling "
+                f"impressions. The raw history below picks up where these "
+                f"leave off.\n\n{hits}\n</room_memory>")
+
+        raw = self.resident.state.get_recent_topic_context(
+            stream, topic, n=10 ** 6,
+            reactions=self.resident.reactions,
+            max_tokens=PERSISTENT_BIRTH_RAW_CHARS // 4)
+        if raw:
+            parts.append(
+                f'<room_history stream="{stream}" topic="{topic}">\n'
+                f"{raw}\n</room_history>")
+        if not parts:
+            return ""
+
+        return (
+            "<<< This is the first turn of a PERSISTENT session for "
+            f"#{stream}>{topic}. Everything below is that room's real "
+            "history, loaded once so it lives in your conversation from "
+            "here on — you are not being asked to summarize or respond to "
+            "it. Read it as your own past. From this turn forward the "
+            "conversation SCROLLS rather than resetting: today's messages "
+            "join this same thread, and only the far end of it will ever "
+            "be folded into summary. Respond only to the new message at "
+            "the very end. >>>\n\n" + "\n\n".join(parts))
 
     # ------------------------------------------------------------------
     # Bookread bindings (books/README.md documents the practice)
