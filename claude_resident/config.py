@@ -68,14 +68,14 @@ SESSION_TTL = 3600  # seconds — kept in lockstep with CACHE_TTL (1h). A sessio
                     # recent-session notes — is the one thing frozen for up to
                     # the hour.)
 SESSION_MAX_TOKENS = 150_000  # trim session before hitting 200k window
-TOPIC_HISTORY_TOKEN_BUDGET = 35_000   # cold-start topic context
+TOPIC_HISTORY_TOKEN_BUDGET = 40_000   # cold-start topic context (raw tail)
 SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
 
 # Cold-start awareness of the OTHER standing streams: a bounded recent-tail
 # from each standing stream except the one being responded in, so tavern
 # buzz reaches DMs and game-room talk reaches tavern. Deliberately an
 # eighth of the old 40k allgame-wide dump — awareness, not immersion.
-CROSS_STREAM_PER_STREAM_TOKENS = 8_000
+CROSS_STREAM_PER_STREAM_TOKENS = 12_000
 SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
 MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
 TYPING_HOLDOFF_TIMEOUT = 30  # max seconds to wait for someone to finish typing
@@ -88,7 +88,7 @@ TYPING_HOLDOFF_TIMEOUT = 30  # max seconds to wait for someone to finish typing
 # up to BURST_SWEEP_ROUNDS times.
 BURST_SWEEP_ROUNDS = 3
 BURST_SWEEP_INTERVAL = 2.0  # seconds between sweeps while a burst is live
-INTERIM_MESSAGES_MAX_CHARS = 4_000  # cap on the catch-up block per turn
+INTERIM_MESSAGES_MAX_CHARS = 8_000  # cap on the catch-up block per turn
 
 # Backfill — how much history to pull on boot
 BACKFILL_PER_STANDING_STREAM = 200
@@ -154,8 +154,8 @@ SESSION_SUMMARY_MODEL = MODEL_IDS["haiku"]
 SESSIONS_DIR = "sessions"
 # Session-note files are append-only foreverlogs (never trimmed — they're
 # history, like api_archive and deblog); only the recall is bounded:
-SESSION_SUMMARY_LOAD_TOPIC = 6     # full summaries loaded for this topic
-SESSION_SUMMARY_LOAD_GLOBAL = 12   # one-liners loaded from other topics
+SESSION_SUMMARY_LOAD_TOPIC = 10    # full summaries loaded for this topic
+SESSION_SUMMARY_LOAD_GLOBAL = 20   # one-liners loaded from other topics
 SESSION_REAPER_INTERVAL = 120      # seconds between reaper sweeps
 
 # Postmark — the pen-pal mail town (github.com/keeminlee/postmark) where the
@@ -185,7 +185,11 @@ POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 # agent_sdk is the DEFAULT since 2026-07-22; set CLAUDE_RESIDENT_ENGINE=api
 # to fall back to the metered Messages-API loop.
 RESPONSE_ENGINE = os.environ.get("CLAUDE_RESIDENT_ENGINE", "agent_sdk")
-AGENT_SDK_MODEL = "claude-opus-4-6"
+# The [1m] variant is Claude Code's subscription-sanctioned 1M-context
+# door (the betas option is API-key-only and ignored on subs — verified
+# 2026-07-25). Persistent sessions scroll toward ~800k before Claude
+# Code's own compaction folds the middle.
+AGENT_SDK_MODEL = "claude-opus-4-6[1m]"
 AGENT_SDK_FALLBACK_MODEL = "claude-sonnet-4-6"  # plan window exhausted → degrade, don't die
 AGENT_SDK_CONFIG_DIR = DEFAULT_STATE_DIR / ".claude_sdk"  # his own Claude Code home
                                                           # (sessions/transcripts persist here)
@@ -197,6 +201,19 @@ AGENT_SDK_CONFIG_DIR = DEFAULT_STATE_DIR / ".claude_sdk"  # his own Claude Code 
 # every episode. The resident manages bindings itself by editing the file;
 # the harness only fills in sdk_session_id. See books/README.md.
 READING_SESSIONS_FILE = "books/reading_sessions.json"
+
+# The distiller: a background thread that rolls AGED channel history
+# (everything older than the newest DISTILL_RAW_KEEP messages per topic)
+# into dense semantic/emotional hits via Haiku — names, running jokes,
+# decisions, emotional turns — cached as channels/<s>/<t>.hits.json and
+# loaded as <topic_memory> on cold starts. Logs stay raw forever; the
+# hits are a regenerable reading of them, not a replacement.
+DISTILL_MODEL = MODEL_IDS["haiku"]
+DISTILL_RAW_KEEP = 200        # newest N messages stay raw / undistilled
+DISTILL_MIN_BATCH = 100       # sweep a topic once this many msgs age out
+DISTILL_INTERVAL = 600        # seconds between distiller sweeps
+DISTILL_CHUNK_MAX_CHARS = 60_000   # one Haiku call per sweep per topic
+DISTILL_HITS_MAX_CHARS = 10_000    # rolling digest ceiling (~2.5k tokens)
 
 # Streams where Claude has standing interest (will read ambient conversation).
 DEFAULT_STANDING_STREAMS = [

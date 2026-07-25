@@ -168,15 +168,10 @@ class StateManager:
             entry_data["msg_id"] = msg_id
         entry = json.dumps(entry_data) + "\n"
         self.append_file(log_path, entry)
-        self._trim_log(log_path)
-
-    def _trim_log(self, log_path: str, max_lines: int = 500):
-        path = self.root / log_path
-        if not path.exists():
-            return
-        lines = path.read_text().strip().split("\n")
-        if len(lines) > max_lines:
-            _atomic_write(path, "\n".join(lines[-max_lines:]) + "\n")
+        # Channel logs are FOREVERLOGS (trim removed 2026-07-25 — the old
+        # 500-line cap silently deleted history like the raccoon era).
+        # Loading is bounded by token budgets; storage never is. Aged
+        # history gets distilled into per-topic hits by distill.py.
 
     # ------------------------------------------------------------------
     # Context retrieval

@@ -182,7 +182,10 @@ class EngagementJudge:
         return False
 
     def _is_bound_reading_topic(self, stream: str, message: dict) -> bool:
-        """True when (stream, topic) is bound in books/reading_sessions.json."""
+        """True when (stream, topic) has a BOOK bound in
+        books/reading_sessions.json. Book-less entries are merely
+        persistent rooms (e.g. tavern) — those keep normal judging, or
+        the resident would answer every ambient message there."""
         topic = message.get("subject", "")
         if not topic:
             return False
@@ -190,7 +193,8 @@ class EngagementJudge:
             raw = self.state.read_file(READING_SESSIONS_FILE)
             if not raw:
                 return False
-            return f"{stream}|{topic}" in json.loads(raw)
+            entry = json.loads(raw).get(f"{stream}|{topic}")
+            return bool(entry) and bool(entry.get("book"))
         except Exception:
             return False
 

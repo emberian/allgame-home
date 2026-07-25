@@ -76,7 +76,7 @@ class ClaudeResident:
         self.reactions: dict[int, dict[str, int]] = {}
         self._msg_index: dict[int, dict] = {}
         self._pending_reactions: dict[tuple[str, str], list[str]] = {}
-        self._MSG_INDEX_CAP = 10_000
+        self._MSG_INDEX_CAP = 50_000  # logs are foreverlogs now; index scales with them
         # Durable across-restart ledger of message ids already handled, so
         # replay/restart never re-responds to a message we already processed.
         self.handled = HandledSet(self.state)

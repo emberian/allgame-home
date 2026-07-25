@@ -215,8 +215,9 @@ class AgentEngine:
         # with his people. Cold starts carry this via tier 4; warm resumes
         # (every later episode) get it injected fresh here. The system
         # prompt is per-request — none of this accumulates into the long
-        # session's history, so it can't bloat compaction.
-        if binding and not cold:
+        # session's history, so it can't bloat compaction. Book-bound
+        # topics only: plain persistent rooms (tavern) ARE the life.
+        if binding and binding.get("book") and not cold:
             life = []
             sessions_block = recent_sessions_block(
                 self.resident.state, stream, topic)

@@ -142,7 +142,9 @@ You have tools for interacting with your state directory and searching messages.
 - Sysadmin inbox (sysadmin_inbox.md)
 - The tail of your journal (journal_recent) — your own recent reflections,
   so your voice travels with you. Full journal via read_state_file.
-- Recent messages in the topic you're responding to
+- Recent messages in the topic you're responding to, preceded by
+  topic_memory — distilled semantic/emotional hits of the room's OLDER
+  history (running jokes, decisions, turns) beyond the raw window
 - A bounded recent-activity tail from your OTHER standing streams
   (recent_stream_activity) — so you know what's been happening around the
   house, wherever you're standing
@@ -396,6 +398,16 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
     if is_first_message:
         tier4_parts = []
         if topic:
+            # Distilled memory of this room's OLDER history — what scrolled
+            # past the raw window, kept as semantic/emotional hits.
+            from claude_resident.distill import load_topic_hits
+            hits = load_topic_hits(state, stream, topic)
+            if hits:
+                tier4_parts.append(
+                    f'<topic_memory stream="{stream}" topic="{topic}">\n'
+                    f'Distilled hits of this room\'s older history (the '
+                    f'raw messages below pick up where this leaves off):\n'
+                    f'{hits}\n</topic_memory>')
             topic_context = state.get_recent_topic_context(
                 stream, topic, max_tokens=TOPIC_HISTORY_TOKEN_BUDGET,
                 reactions=reactions)
