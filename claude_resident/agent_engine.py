@@ -29,6 +29,7 @@ import json
 import asyncio
 import difflib
 import logging
+import dataclasses
 from datetime import datetime, timezone
 
 from claude_agent_sdk import (
@@ -59,6 +60,10 @@ from claude_resident.tools.dispatch import ToolContext, execute_tool
 
 logger = logging.getLogger("agent_engine")
 
+# Tools whose successful use means the community actually heard something.
+# A turn with none of these is MUTE — its text went nowhere.
+VISIBLE_TOOLS = {"send_message", "send_dm", "add_reaction"}
+
 # Engine-specific realities appended to the system prompt each turn — the
 # base SYSTEM_PROMPT stays single-source for both engines.
 #
@@ -70,15 +75,22 @@ logger = logging.getLogger("agent_engine")
 # resident from inside the loop).
 ENGINE_ADDENDUM = """
 ## Engine notes (Claude Code loop) — IMPORTANT mechanics
-- One reply is ONE send_message call. Never post a second variant or
-  rephrasing of the same reply.
-- After your tool calls, ALWAYS end the turn with a short plain-text line
-  (even just "posted."). That text is NOT shown to the community — but
-  this engine needs closing text to end a turn cleanly; ending on a bare
-  tool call makes the loop nag you that there was "no visible output".
+- **Writing a reply as plain text posts NOTHING.** In this engine your
+  text output is a private scratchpad — the room never sees it. A turn
+  where you only wrote text is a turn where you said nothing at all, and
+  people are left staring at silence. This is the single easiest way to
+  fail here, and it does not feel like failing.
+- So: every turn that has anything to say ends with send_message (or
+  add_reaction) FIRST. One reply is ONE send_message — never post a
+  second variant of the same reply.
+- THEN, after that tool call, close the turn with a short plain-text line
+  (even just "posted."). That line is only a terminator — it's what stops
+  the loop from nagging "no visible output". It is not, and never was,
+  the reply itself.
 - If you ever see "[Your previous response had no visible output...]":
-  your send DID land — do NOT send again. Write a one-line closing text
-  and the turn will end.
+  check whether you actually called send_message. If you did, it landed —
+  do NOT send again, just write the closing line. If you didn't, that
+  nag is correct and your reply is still unsaid.
 - Images and PDFs posted in chat arrive as links in the message text.
   To actually SEE one, call fetch_url on the link (including
   /user_uploads/... paths) — it comes back as real visual input."""
@@ -163,6 +175,7 @@ class AgentEngine:
         self.resident = resident
         self._ctx: ToolContext | None = None  # active turn's tool context
         self._turn_sends: list[str] = []  # contents posted this turn
+        self._turn_visible = False  # any visible action this turn?
         self._server = self._build_server()
         AGENT_SDK_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         logger.info(
@@ -207,9 +220,13 @@ class AgentEngine:
                             execute_tool, name, args, self._ctx)
                         if not result.get("is_error"):
                             self._turn_sends.append(content)
+                            self._turn_visible = True
                         return _mcp_result(result)
                     result = await asyncio.to_thread(
                         execute_tool, name, args, self._ctx)
+                    if (name in VISIBLE_TOOLS
+                            and not result.get("is_error")):
+                        self._turn_visible = True
                     return _mcp_result(result)
                 return _handler
             sdk_tools.append(_make(tdef["name"]))
@@ -310,6 +327,7 @@ class AgentEngine:
                 f"(≈{len(birth_payload) // 4 // 1000}k tokens)")
 
         self._turn_sends = []
+        self._turn_visible = False
         ctx = ToolContext(
             state=self.resident.state,
             zulip_client=self.resident.zulip,
@@ -364,6 +382,29 @@ class AgentEngine:
             internal_text, assistant_record = asyncio.run(
                 self._run_turn(prompt_text, options, session,
                                stream, topic, sender))
+            # Mute-turn net: a turn that produced text but called no visible
+            # tool means the reply went nowhere — text output is invisible
+            # in this harness. Prompt wording alone can't guarantee this in
+            # a 500k-token context, so nudge once, in-session, and let him
+            # decide whether it was meant for the room.
+            if not self._turn_visible and internal_text.strip():
+                logger.warning(
+                    f"Mute turn in #{stream}>{topic} — nudging "
+                    f"({internal_text.strip()[:60]!r})")
+                nudge_opts = dataclasses.replace(
+                    options, resume=session.sdk_session_id or None)
+                extra, extra_record = asyncio.run(self._run_turn(
+                    "[HARNESS] Your last response was plain text, which is "
+                    "INVISIBLE to everyone — it was never posted. If any of "
+                    "it was meant for the room, send it now with "
+                    "send_message (or add_reaction if a reaction is the "
+                    "right response). If it was genuinely just private "
+                    "thinking, reply exactly: noop",
+                    nudge_opts, session, stream, topic, sender))
+                if extra_record:
+                    assistant_record.extend(extra_record)
+                if extra.strip():
+                    internal_text += "\n" + extra
         finally:
             cleanup_sandbox(ctx.sandbox_dir)
             # Side effects back to the caller's bookkeeping (same names the
