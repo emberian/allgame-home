@@ -84,6 +84,50 @@ ENGINE_ADDENDUM = """
   /user_uploads/... paths) — it comes back as real visual input."""
 
 
+PDF_TEXT_MAX_CHARS = 600_000  # ~180k tokens — a whole book, if it comes to that
+
+
+def _pdf_to_text(block: dict) -> str:
+    """Extract a fetched PDF's text with page markers, for a window big
+    enough to hold it."""
+    import io
+    import base64
+
+    src = block.get("source", {}) or {}
+    data = src.get("data")
+    if not data:
+        return "[PDF received but empty]"
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(base64.b64decode(data)))
+        parts, chars = [], 0
+        for i, page in enumerate(reader.pages):
+            try:
+                text = (page.extract_text() or "").strip()
+            except Exception:
+                continue
+            if not text:
+                continue
+            parts.append(f"[p. {i + 1}]\n{text}")
+            chars += len(text)
+            if chars > PDF_TEXT_MAX_CHARS:
+                parts.append(
+                    f"[…truncated at {PDF_TEXT_MAX_CHARS:,} chars; "
+                    f"{len(reader.pages) - i - 1} pages remain. Save it to "
+                    f"books/ and slice it if you want the whole thing.]")
+                break
+        body = "\n\n".join(parts)
+        return (f"[PDF extracted: {len(reader.pages)} pages, "
+                f"{len(body):,} chars of text]\n\n{body}"
+                if body else
+                "[PDF has no extractable text — likely scanned images. "
+                "Fetch individual page images if you need to see it.]")
+    except Exception as e:
+        return (f"[PDF text extraction failed: {e}. The raw file is still "
+                f"fetchable in the sandbox if you need it.]")
+
+
 def _mcp_result(result: dict) -> dict:
     """Convert an execute_tool result to MCP tool-result content."""
     content = result.get("content", "")
@@ -101,10 +145,11 @@ def _mcp_result(result: dict) -> dict:
                                "data": src.get("data", ""),
                                "mimeType": src.get("media_type", "image/png")})
             elif btype == "document":
-                blocks.append({"type": "text", "text":
-                               "[PDF fetched — inline PDF viewing isn't "
-                               "available in the agent-sdk engine; use the "
-                               "sandbox to extract text if needed]"})
+                # MCP has no document block, but a 1M window has room for
+                # the whole text — extract it in-process rather than
+                # handing back a placeholder (the old behavior made PDFs
+                # unreadable in this engine).
+                blocks.append({"type": "text", "text": _pdf_to_text(b)})
     out = {"content": blocks}
     if result.get("is_error"):
         out["is_error"] = True
