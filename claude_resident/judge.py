@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from claude_resident.config import JUDGE_MODEL as _JUDGE_MODEL
+from claude_resident.config import READING_SESSIONS_FILE
 
 
 class EngagementJudge:
@@ -143,6 +144,14 @@ class EngagementJudge:
             self.last_reason = "DM"
             return True
 
+        # Bound reading topics are HIS rooms — everything said there gets
+        # his attention. Frank never gates the reading room, so a bare 📖
+        # (or any message) can never be silently judge-NO'd and dropped.
+        if message.get("type") != "private" and self.state \
+                and self._is_bound_reading_topic(stream, message):
+            self.last_reason = "bound reading topic"
+            return True
+
         # Direct mentions engage — but only in standing streams.
         # @-mentions in unsubscribed streams arrive via Zulip's notification
         # delivery but Claude has no channel history and shouldn't reply there.
@@ -171,6 +180,19 @@ class EngagementJudge:
 
         self.last_reason = "no trigger"
         return False
+
+    def _is_bound_reading_topic(self, stream: str, message: dict) -> bool:
+        """True when (stream, topic) is bound in books/reading_sessions.json."""
+        topic = message.get("subject", "")
+        if not topic:
+            return False
+        try:
+            raw = self.state.read_file(READING_SESSIONS_FILE)
+            if not raw:
+                return False
+            return f"{stream}|{topic}" in json.loads(raw)
+        except Exception:
+            return False
 
     def _judge_with_model(self, message: dict, stream: str) -> bool:
         self.last_remark = ""
