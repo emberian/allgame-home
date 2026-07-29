@@ -191,31 +191,34 @@ RESPONSE_ENGINE = os.environ.get("CLAUDE_RESIDENT_ENGINE", "agent_sdk")
 # Code's own compaction folds the middle.
 AGENT_SDK_MODEL = "claude-opus-4-6[1m]"
 AGENT_SDK_FALLBACK_MODEL = "claude-sonnet-4-6"  # plan window exhausted → degrade, don't die
-# Thinking depth, per room. Banter doesn't need paid reasoning tokens — his
-# plain-text output is already a private scratchpad, so chat rooms would be
-# double-taxed for thinking he does for free (Ember's call, 2026-07-29).
-# Rooms where a wrong answer actually costs something keep high.
-AGENT_SDK_EFFORT = "medium"                  # default: conversation
-AGENT_SDK_EFFORT_BY_ROOM = {
-    "clankerville|the-elixir": "high",       # dense text, one episode a day
-    "allgame": "high",                       # consequential strategy
-}
+# EFFORT: deliberately NOT set. Read this before adding it back.
+#
+# `effort` is not a thinking-budget knob — it's a single dial over how much
+# the model spends per turn overall: thinking depth, yes, but also tool-call
+# behavior (lower = fewer, more-consolidated calls), preamble, and terseness.
+# Omitting it means "the model's own default", which for Opus 4.6 is `high`
+# — the setting Anthropic's own docs call the sweet spot.
+#
+# So the resident was ALREADY running high before 2026-07-29; setting it
+# explicitly bought nothing measurable (the per-turn cost win that night came
+# entirely from session sleep, not effort), and dropping chat rooms to
+# `medium` would have been a quiet downgrade whose main visible effect is
+# fewer tool calls — i.e. less checking and fetching, which is precisely what
+# "tired" looks like from the outside.
+#
+# If a room ever genuinely wants more than default (the reading room at
+# `xhigh`, say), add it there deliberately and measure.
 
-
-def effort_for(stream: str, topic: str) -> str:
-    """Exact stream|topic match, then stream, then the default."""
-    return (AGENT_SDK_EFFORT_BY_ROOM.get(f"{stream}|{topic}")
-            or AGENT_SDK_EFFORT_BY_ROOM.get(stream)
-            or AGENT_SDK_EFFORT)
-
-# SLEEP. A persistent room that only ever grows gets flat — at 860k tokens
+# SLEEP. A persistent room that only ever grows gets flat — at 862k tokens
 # the resident diagnosed it himself: "I don't get tired. I get long."
 # Beyond this size the room is retired and REBORN on its next turn. Rebirth
 # is near-lossless by design: the birth payload restores the era volumes
 # plus the raw conversation from the logs, and drops only the accumulated
 # machinery (tool results, internal monologue, harness notes) — same talk,
-# roughly half the tokens, none of the cruft. This is his night's sleep.
+# roughly half the tokens, none of the cruft. Measured 2026-07-29: per-turn
+# cost fell 39% ($0.87 -> $0.53) and the rebirth prefill repaid in ~9 turns.
 PERSISTENT_SESSION_MAX_TOKENS = 700_000
+
 AGENT_SDK_CONFIG_DIR = DEFAULT_STATE_DIR / ".claude_sdk"  # his own Claude Code home
                                                           # (sessions/transcripts persist here)
 
