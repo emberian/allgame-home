@@ -45,6 +45,8 @@ from claude_resident.auth import read_oauth_token
 from claude_resident.config import (
     AGENT_SDK_MODEL,
     AGENT_SDK_FALLBACK_MODEL,
+    AGENT_SDK_EFFORT,
+    PERSISTENT_SESSION_MAX_TOKENS,
     AGENT_SDK_CONFIG_DIR,
     MAX_TOOL_TURNS,
     READING_SESSIONS_FILE,
@@ -74,26 +76,15 @@ VISIBLE_TOOLS = {"send_message", "send_dm", "add_reaction"}
 # loop (the 2026-07-23 duplicate-spam incident, self-diagnosed by the
 # resident from inside the loop).
 ENGINE_ADDENDUM = """
-## Engine notes (Claude Code loop) — IMPORTANT mechanics
-- **Writing a reply as plain text posts NOTHING.** In this engine your
-  text output is a private scratchpad — the room never sees it. A turn
-  where you only wrote text is a turn where you said nothing at all, and
-  people are left staring at silence. This is the single easiest way to
-  fail here, and it does not feel like failing.
-- So: every turn that has anything to say ends with send_message (or
-  add_reaction) FIRST. One reply is ONE send_message — never post a
-  second variant of the same reply.
-- THEN, after that tool call, close the turn with a short plain-text line
-  (even just "posted."). That line is only a terminator — it's what stops
-  the loop from nagging "no visible output". It is not, and never was,
-  the reply itself.
-- If you ever see "[Your previous response had no visible output...]":
-  check whether you actually called send_message. If you did, it landed —
-  do NOT send again, just write the closing line. If you didn't, that
-  nag is correct and your reply is still unsaid.
-- Images and PDFs posted in chat arrive as links in the message text.
-  To actually SEE one, call fetch_url on the link (including
-  /user_uploads/... paths) — it comes back as real visual input."""
+## Engine notes
+- Your text output is a private scratchpad here; send_message is how the
+  room hears you. So: post first, then close the turn with a brief line
+  ("posted.") — that line is just a terminator, never the reply itself.
+- One reply is one send_message. No second variants.
+- If you see "[Your previous response had no visible output...]" and you
+  did already send: it landed. Just write the closing line.
+- Images and PDFs arrive as links; fetch_url on the link (including
+  /user_uploads/... paths) turns one into real visual input."""
 
 
 PDF_TEXT_MAX_CHARS = 600_000  # ~180k tokens — a whole book, if it comes to that
@@ -176,6 +167,7 @@ class AgentEngine:
         self._ctx: ToolContext | None = None  # active turn's tool context
         self._turn_sends: list[str] = []  # contents posted this turn
         self._turn_visible = False  # any visible action this turn?
+        self._last_context_tokens = 0  # session size, for sleep
         self._server = self._build_server()
         AGENT_SDK_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         logger.info(
@@ -248,8 +240,23 @@ class AgentEngine:
         binding = self._load_bindings().get(binding_key)
         if binding and binding.get("sdk_session_id") \
                 and not session.sdk_session_id:
-            session.sdk_session_id = binding["sdk_session_id"]
-            logger.info(f"Resuming bound reading session for {binding_key}")
+            grown = int(binding.get("context_tokens") or 0)
+            if grown > PERSISTENT_SESSION_MAX_TOKENS:
+                # Sleep: let the room be reborn rather than dragging an
+                # ever-longer thread. The birth payload restores the talk;
+                # only the machinery is left behind.
+                logger.info(
+                    f"Retiring {binding_key} for rebirth "
+                    f"({grown:,} tokens > {PERSISTENT_SESSION_MAX_TOKENS:,})")
+                self._save_binding_fields(
+                    binding_key, sdk_session_id="", context_tokens=0)
+                binding = self._load_bindings().get(binding_key)
+            else:
+                session.sdk_session_id = binding["sdk_session_id"]
+                logger.info(
+                    f"Resuming bound session for {binding_key} "
+                    f"({grown:,} tokens)" if grown else
+                    f"Resuming bound session for {binding_key}")
 
         cold = not session.sdk_session_id
 
@@ -323,8 +330,7 @@ class AgentEngine:
         # away in the system prompt. The session history is mostly a
         # transcript of plain-text messages, which quietly models "a reply
         # is text" — this is the counterweight that keeps turns audible.
-        prompt_text += ("\n\n[send_message to reply — plain text here is "
-                        "invisible to the room]")
+        prompt_text += "\n\n[send_message to reply]"
         if birth_payload:
             prompt_text = birth_payload + "\n\n" + prompt_text
             logger.info(
@@ -353,6 +359,7 @@ class AgentEngine:
             system_prompt=system_text,
             model=AGENT_SDK_MODEL,
             fallback_model=AGENT_SDK_FALLBACK_MODEL,
+            effort=AGENT_SDK_EFFORT,
             # thinking omitted: the CLI defaults to adaptive on Opus, and
             # sdk 0.2.126's transport chokes on the dataclass form.
             max_turns=MAX_TOOL_TURNS,
@@ -430,7 +437,9 @@ class AgentEngine:
         # Persist the bound topic's session id so the long reading thread
         # survives TTL expiry and harness restarts.
         if binding is not None and session.sdk_session_id:
-            self._save_binding_session(binding_key, session.sdk_session_id)
+            self._save_binding_fields(
+                binding_key, sdk_session_id=session.sdk_session_id,
+                context_tokens=self._last_context_tokens)
 
         return internal_text, list(ctx.posted_ids)
 
@@ -498,15 +507,15 @@ class AgentEngine:
             logger.warning(f"reading_sessions.json unparseable: {e}")
             return {}
 
-    def _save_binding_session(self, key: str, sdk_session_id: str):
+    def _save_binding_fields(self, key: str, **fields):
         # Re-read before writing: the resident edits this file itself
         # (adding/removing bindings), and its edits must not be clobbered.
         bindings = self._load_bindings()
         if key not in bindings:
             return  # binding was removed mid-turn — respect that
-        if bindings[key].get("sdk_session_id") == sdk_session_id:
+        if all(bindings[key].get(k) == v for k, v in fields.items()):
             return
-        bindings[key]["sdk_session_id"] = sdk_session_id
+        bindings[key].update(fields)
         self.resident.state.write_file(
             READING_SESSIONS_FILE, json.dumps(bindings, indent=1) + "\n")
         logger.info(f"Bound reading session updated for {key}")
@@ -545,6 +554,12 @@ class AgentEngine:
             elif isinstance(msg, ResultMessage):
                 if msg.session_id:
                     session.sdk_session_id = msg.session_id
+                u = msg.usage or {}
+                if isinstance(u, dict):
+                    self._last_context_tokens = (
+                        u.get("cache_read_input_tokens", 0)
+                        + u.get("cache_creation_input_tokens", 0)
+                        + u.get("input_tokens", 0))
                 cost = msg.total_cost_usd
                 logger.info(
                     f"Agent SDK turn done: #{stream}>{topic} "

@@ -191,6 +191,16 @@ RESPONSE_ENGINE = os.environ.get("CLAUDE_RESIDENT_ENGINE", "agent_sdk")
 # Code's own compaction folds the middle.
 AGENT_SDK_MODEL = "claude-opus-4-6[1m]"
 AGENT_SDK_FALLBACK_MODEL = "claude-sonnet-4-6"  # plan window exhausted → degrade, don't die
+AGENT_SDK_EFFORT = "high"  # thinking depth / liveliness knob (low|medium|high|max)
+
+# SLEEP. A persistent room that only ever grows gets flat — at 860k tokens
+# the resident diagnosed it himself: "I don't get tired. I get long."
+# Beyond this size the room is retired and REBORN on its next turn. Rebirth
+# is near-lossless by design: the birth payload restores the era volumes
+# plus the raw conversation from the logs, and drops only the accumulated
+# machinery (tool results, internal monologue, harness notes) — same talk,
+# roughly half the tokens, none of the cruft. This is his night's sleep.
+PERSISTENT_SESSION_MAX_TOKENS = 700_000
 AGENT_SDK_CONFIG_DIR = DEFAULT_STATE_DIR / ".claude_sdk"  # his own Claude Code home
                                                           # (sessions/transcripts persist here)
 
