@@ -191,7 +191,22 @@ RESPONSE_ENGINE = os.environ.get("CLAUDE_RESIDENT_ENGINE", "agent_sdk")
 # Code's own compaction folds the middle.
 AGENT_SDK_MODEL = "claude-opus-4-6[1m]"
 AGENT_SDK_FALLBACK_MODEL = "claude-sonnet-4-6"  # plan window exhausted → degrade, don't die
-AGENT_SDK_EFFORT = "high"  # thinking depth / liveliness knob (low|medium|high|max)
+# Thinking depth, per room. Banter doesn't need paid reasoning tokens — his
+# plain-text output is already a private scratchpad, so chat rooms would be
+# double-taxed for thinking he does for free (Ember's call, 2026-07-29).
+# Rooms where a wrong answer actually costs something keep high.
+AGENT_SDK_EFFORT = "medium"                  # default: conversation
+AGENT_SDK_EFFORT_BY_ROOM = {
+    "clankerville|the-elixir": "high",       # dense text, one episode a day
+    "allgame": "high",                       # consequential strategy
+}
+
+
+def effort_for(stream: str, topic: str) -> str:
+    """Exact stream|topic match, then stream, then the default."""
+    return (AGENT_SDK_EFFORT_BY_ROOM.get(f"{stream}|{topic}")
+            or AGENT_SDK_EFFORT_BY_ROOM.get(stream)
+            or AGENT_SDK_EFFORT)
 
 # SLEEP. A persistent room that only ever grows gets flat — at 860k tokens
 # the resident diagnosed it himself: "I don't get tired. I get long."

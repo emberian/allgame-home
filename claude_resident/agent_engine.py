@@ -45,7 +45,7 @@ from claude_resident.auth import read_oauth_token
 from claude_resident.config import (
     AGENT_SDK_MODEL,
     AGENT_SDK_FALLBACK_MODEL,
-    AGENT_SDK_EFFORT,
+    effort_for,
     PERSISTENT_SESSION_MAX_TOKENS,
     AGENT_SDK_CONFIG_DIR,
     MAX_TOOL_TURNS,
@@ -359,7 +359,7 @@ class AgentEngine:
             system_prompt=system_text,
             model=AGENT_SDK_MODEL,
             fallback_model=AGENT_SDK_FALLBACK_MODEL,
-            effort=AGENT_SDK_EFFORT,
+            effort=effort_for(stream, topic),
             # thinking omitted: the CLI defaults to adaptive on Opus, and
             # sdk 0.2.126's transport chokes on the dataclass form.
             max_turns=MAX_TOOL_TURNS,
