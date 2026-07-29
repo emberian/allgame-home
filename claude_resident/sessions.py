@@ -25,6 +25,7 @@ class ConversationSession:
     participants: set = field(default_factory=set)  # senders seen this session
     last_seen_msg_id: int = 0  # newest channel msg id already in this session's context
     sdk_session_id: str = ""  # agent-sdk engine: Claude Code session to resume
+    last_msg_ts: float = 0.0  # epoch of newest message answered (for gaps)
 
     def touch(self):
         self.last_active = time.time()

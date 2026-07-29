@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Optional
 
 from claude_resident.config import ALLGAME_CORE_FILES, CROSSTOPIC_FILE
-from claude_resident.util import safe_filename
+from claude_resident.util import (safe_filename, fmt_log_time,
+                                  _as_local)
 
 
 def _atomic_write(path: Path, content: str):
@@ -263,11 +264,39 @@ class StateManager:
             if exclude_sender and exclude_sender in sender.lower():
                 continue
             content = self._strip_zulip_quotes(m.get("content", ""))
-            lines.append(f"[{m.get('ts', '')[:16]}] {sender}: {content}")
+            lines.append(
+                f"[{fmt_log_time(m.get('ts', ''))}] {sender}: {content}")
         text = "\n".join(lines)
         if len(text) > max_chars:
             text = "[…earlier interim messages elided…]\n" + text[-max_chars:]
         return text
+
+    def previous_message_time(self, stream: str, topic: str,
+                             exclude_ids: set | None = None) -> float:
+        """Epoch of the newest logged message in this topic that isn't in
+        exclude_ids. Lets the turn clock report a real elapsed time even
+        when the in-memory session is fresh (every restart)."""
+        safe_stream = safe_filename(stream)
+        safe_topic = safe_filename(topic) if topic else "_notopic"
+        path = self.root / f"channels/{safe_stream}/{safe_topic}.jsonl"
+        if not path.exists():
+            return 0.0
+        exclude_ids = exclude_ids or set()
+        try:
+            lines = path.read_text().strip().split("\n")
+        except OSError:
+            return 0.0
+        for line in reversed(lines[-400:]):
+            try:
+                m = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if m.get("msg_id") in exclude_ids:
+                continue
+            dt = _as_local(m.get("ts"))
+            if dt is not None:
+                return dt.timestamp()
+        return 0.0
 
     @staticmethod
     def _strip_zulip_quotes(content: str) -> str:
@@ -293,7 +322,8 @@ class StateManager:
                 except (json.JSONDecodeError, KeyError):
                     continue
                 content = self._strip_zulip_quotes(msg.get('content', ''))
-                text = f"[{msg['ts']}] {msg['sender']}: {content}"
+                text = (f"[{fmt_log_time(msg['ts'])}] "
+                        f"{msg['sender']}: {content}")
                 msg_id = msg.get("msg_id")
                 text += _reaction_suffix(msg_id, reactions)
                 line_tokens = len(text) // 4 + 1
@@ -310,7 +340,8 @@ class StateManager:
             try:
                 msg = json.loads(line)
                 content = self._strip_zulip_quotes(msg.get('content', ''))
-                text = f"[{msg['ts']}] {msg['sender']}: {content}"
+                text = (f"[{fmt_log_time(msg['ts'])}] "
+                        f"{msg['sender']}: {content}")
                 msg_id = msg.get("msg_id")
                 text += _reaction_suffix(msg_id, reactions)
                 formatted.append(text)

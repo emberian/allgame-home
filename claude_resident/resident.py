@@ -37,7 +37,8 @@ from claude_resident.sandbox import cleanup_sandbox
 from claude_resident.tools.definitions import TOOL_DEFINITIONS
 from claude_resident.tools.dispatch import ToolContext, execute_tool
 from claude_resident.tools.comms_tools import write_sysadmin_message
-from claude_resident.util import safe_filename
+from claude_resident.util import (safe_filename, fmt_now,
+                                  fmt_log_time, human_gap)
 
 
 class ClaudeResident:
@@ -269,12 +270,34 @@ class ClaudeResident:
                     "<interim_messages>\nSaid in this topic since your last "
                     "turn (you already chose not to reply to these — context "
                     "only):\n" + interim + "\n</interim_messages>"})
+        # --- Temporal header ---------------------------------------------
+        # He had no clock at all: turn prompts carried no timestamp and the
+        # system prompt no date, so in a persistent session "five minutes
+        # ago" and "yesterday" were indistinguishable (Sentyr kept catching
+        # time-tracking errors). Time goes in the PROMPT, never the system
+        # block — a clock in the system prompt would invalidate the cached
+        # prefix every single turn.
+        trigger_ts = trigger.get("timestamp") or time.time()
+        header = f"[now: {fmt_now(trigger_ts)}"
+        prior_ts = session.last_msg_ts or self.state.previous_message_time(
+            stream, topic, exclude_ids=set(batch_ids))
+        if prior_ts:
+            gap = trigger_ts - prior_ts
+            if gap >= 90:
+                header += (f" · {human_gap(gap)} since the last message "
+                           f"you saw here")
+        elif not is_first_message:
+            header += " · elapsed time unknown"
+        header += "]"
+        content_blocks.append({"type": "text", "text": header})
+
         if len(batch) > 1:
             content_blocks.append({"type": "text", "text":
                 f"[{len(batch)} messages arrived together — respond however "
                 f"fits: one reply, several, or a reaction.]"})
         for m in batch:
-            line = (f"{m.get('sender_full_name', 'unknown')}: "
+            stamp = fmt_log_time(m.get("timestamp") or trigger_ts)
+            line = (f"[{stamp}] {m.get('sender_full_name', 'unknown')}: "
                     f"{m.get('content', '')}")
             if self.agent_engine is not None:
                 # SDK engine: keep the raw text — image/PDF links stay
@@ -287,6 +310,9 @@ class ClaudeResident:
         if batch_ids:
             session.last_seen_msg_id = max(
                 [session.last_seen_msg_id, *batch_ids])
+        batch_ts = [m.get("timestamp") for m in batch if m.get("timestamp")]
+        if batch_ts:
+            session.last_msg_ts = max([session.last_msg_ts, *batch_ts])
 
         if not is_first_message:
             delta_text = compute_state_deltas(
