@@ -125,6 +125,7 @@ class EngagementJudge:
         # appended to the message Claude sees. Empty unless the model path
         # ran and chose to leave one.
         self.last_remark = ""
+        self.judge_errored = False
         # Lurk decay: messages since last direct interaction per stream
         self._msgs_since_interaction: dict[str, int] = {}
 
@@ -164,6 +165,7 @@ class EngagementJudge:
         # (self / @-mention / DM) don't run the model judge, so a stale
         # remark must not ride along on them.
         self.last_remark = ""
+        self.judge_errored = False
         content = message.get("content", "").lower()
         sender = message.get("sender_full_name", "").lower()
 
@@ -207,13 +209,36 @@ class EngagementJudge:
             # Track this message for lurk decay (not direct)
             self.record_message(stream, is_direct=False)
 
-            if self.anthropic and self.state:
+            # The model judge runs through the SDK now, not the raw client —
+            # gating it on `self.anthropic` was a leftover that would silently
+            # disable judgment (and drop ambient messages) if that client were
+            # ever absent.
+            if self.state:
                 return self._judge_with_model(message, stream)
             if "claude" in content:
                 self.last_reason = "name in standing stream (fallback)"
                 return True
 
         self.last_reason = "no trigger"
+        return False
+
+    def _replying_to_claude(self, stream: str, topic: str) -> bool:
+        """True when the previous message in this room was Claude's own —
+        i.e. what just arrived is probably a reply to him."""
+        if not self.state:
+            return False
+        try:
+            from claude_resident.util import safe_filename
+            path = (self.state.root / f"channels/{safe_filename(stream)}/"
+                    f"{safe_filename(topic) or '_notopic'}.jsonl")
+            lines = path.read_text().strip().split("\n")
+            for line in reversed(lines[-6:]):
+                m = json.loads(line)
+                if self.bot_name in m.get("sender", "").lower():
+                    return True
+                return False
+        except Exception:
+            return False
         return False
 
     def _is_bound_reading_topic(self, stream: str, message: dict) -> bool:
@@ -320,7 +345,11 @@ Say NO if ANY of these apply:
 - Responding would interrupt a human-to-human exchange
 - The message is administrative/logistical noise
 - Claude would just be agreeing, reacting, or restating what someone said
-- Claude already spoke recently in this topic and should let others talk
+- Claude already spoke recently AND this message isn't engaging with him — but
+  note: a message arriving seconds after Claude spoke is usually a REPLY to
+  Claude. "He just spoke" is a reason to be brief, never on its own a reason
+  to leave someone hanging. If it answers, questions, challenges, or builds on
+  what he just said, that's YES regardless of how recently he talked.
 - The message is casual chatter that doesn't need Claude's input
 - Someone is sharing something and the appropriate response is to just read it, not comment
 
@@ -398,9 +427,16 @@ the remark when you've got nothing real to say.
                     pass
             return should
         except Exception as e:
+            # Fail OPEN. A judge outage used to drop any message lacking the
+            # literal string "claude" — and handle_message then marked it
+            # handled forever, so it was never retried. Being occasionally
+            # too talkative during an outage beats silently ignoring people.
             self.logger.warning(f"Engagement judge model call failed: {e}")
+            self.judge_errored = True
             if "claude" in content.lower():
                 self.last_reason = "name in standing stream (model fallback)"
-                return True
-            self.last_reason = f"model error, no trigger ({e})"
-            return False
+            elif self._replying_to_claude(stream, topic):
+                self.last_reason = "arrived right after Claude spoke (fallback)"
+            else:
+                self.last_reason = f"judge unavailable, engaging anyway ({e})"
+            return True

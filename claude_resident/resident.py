@@ -173,7 +173,11 @@ class ClaudeResident:
             self.logger.info(
                 f"Skipping #{stream}>{topic} from "
                 f"{m.get('sender_full_name', '?')}: {self.judge.last_reason}")
-            self.handled.mark(m.get("id"))
+            # Only a real judgment consumes a message. If the judge itself
+            # errored, leave it unhandled so a restart can reconsider it
+            # rather than burying it forever.
+            if not getattr(self.judge, "judge_errored", False):
+                self.handled.mark(m.get("id"))
         if trigger_idx is None:
             return
         trigger = batch[trigger_idx]
