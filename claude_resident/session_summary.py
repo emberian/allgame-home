@@ -20,6 +20,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 
+from claude_resident.sdk_call import complete as sdk_complete
 from claude_resident.config import (
     SESSIONS_DIR,
     SESSION_SUMMARY_MODEL,
@@ -144,17 +145,13 @@ def summarize_session(anthropic_client, session) -> str:
     if not transcript.strip():
         return ""
     try:
-        response = anthropic_client.messages.create(
-            model=SESSION_SUMMARY_MODEL,
-            max_tokens=400,
-            system=SUMMARY_SYSTEM,
-            messages=[{"role": "user", "content":
-                       f"Session in #{session.stream} > {session.topic}:\n\n"
-                       f"{transcript}"}],
-        )
-        text = "".join(
-            _block_text(b) for b in response.content
-            if _block_type(b) == "text").strip()
+        # Plan limits via the SDK — the raw-API path ran on metered
+        # extra-usage credit and quietly degraded these to mechanical
+        # stubs whenever it ran dry (2026-07-30 log audit).
+        text = sdk_complete(
+            f"Session in #{session.stream} > {session.topic}:\n\n"
+            f"{transcript}",
+            system=SUMMARY_SYSTEM, model=SESSION_SUMMARY_MODEL).strip()
         if text:
             return text
         logger.warning("Session summary model returned no text; using stub")

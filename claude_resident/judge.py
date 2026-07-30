@@ -6,6 +6,41 @@ from datetime import datetime, timezone
 
 from claude_resident.config import JUDGE_MODEL as _JUDGE_MODEL
 from claude_resident.config import READING_SESSIONS_FILE
+from claude_resident.sdk_call import complete as sdk_complete
+
+class _VerdictBlock:
+    """Adapts a parsed JSON verdict to the tool_use block shape the judge's
+    existing parser expects."""
+    type = "tool_use"
+    name = "verdict"
+
+    def __init__(self, data: dict):
+        self.input = data
+
+
+class _VerdictResponse:
+    def __init__(self, data: dict):
+        self.content = [_VerdictBlock(data)]
+
+
+def _parse_verdict(raw: str) -> "_VerdictResponse":
+    """Pull the JSON verdict out of the model's text (tolerates fences and
+    surrounding prose). Raises if there's no usable object — the caller
+    already treats an exception as 'fall back to heuristics'."""
+    text = (raw or "").strip()
+    if "```" in text:
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(f"no JSON verdict in judge output: {raw[:120]!r}")
+    data = json.loads(text[start:end + 1])
+    if str(data.get("decision", "")).upper() not in ("YES", "NO"):
+        raise ValueError(f"verdict missing decision: {data}")
+    data["decision"] = str(data["decision"]).upper()
+    return _VerdictResponse(data)
+
 
 
 class EngagementJudge:
@@ -301,13 +336,17 @@ the remark when you've got nothing real to say.
 """
 
         try:
-            response = self.anthropic.messages.create(
-                model=self.JUDGE_MODEL,
-                max_tokens=320,
-                tools=[self.VERDICT_TOOL],
-                tool_choice={"type": "tool", "name": "verdict"},
-                messages=[{"role": "user", "content": prompt}],
-            )
+            # Plan limits via the SDK, not metered extra-usage credit —
+            # the raw-API path failed hundreds of times between 2026-07-23
+            # and 07-30 ("credit balance too low"), silently dropping Frank
+            # to the keyword fallback below. The SDK path has no forced
+            # tool use, so the verdict comes back as JSON we parse.
+            raw = sdk_complete(
+                prompt + "\n\nRespond with ONLY a JSON object: "
+                '{"decision": "YES"|"NO", "reason": "<few words>", '
+                '"remark": "<optional aside, omit if none>"}',
+                model=self.JUDGE_MODEL)
+            response = _parse_verdict(raw)
 
             decision = None
             reason = ""

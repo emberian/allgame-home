@@ -150,7 +150,7 @@ CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
 # plus one-liners from elsewhere. Summaries are written by Haiku from the
 # session's real message history (which includes tool calls and internal
 # monologue that exist nowhere else), falling back to a mechanical stub.
-SESSION_SUMMARY_MODEL = MODEL_IDS["haiku"]
+SESSION_SUMMARY_MODEL = MODEL_IDS["sonnet"]  # his own memory notes
 SESSIONS_DIR = "sessions"
 # Session-note files are append-only foreverlogs (never trimmed — they're
 # history, like api_archive and deblog); only the recall is bounded:
@@ -236,7 +236,7 @@ READING_SESSIONS_FILE = "books/reading_sessions.json"
 # decisions, emotional turns — cached as channels/<s>/<t>.hits.json and
 # loaded as <topic_memory> on cold starts. Logs stay raw forever; the
 # hits are a regenerable reading of them, not a replacement.
-DISTILL_MODEL = MODEL_IDS["haiku"]
+DISTILL_MODEL = MODEL_IDS["opus"]   # sealed forever — don't economize here
 DISTILL_RAW_KEEP = 200        # newest N messages stay raw / undistilled
 DISTILL_MIN_BATCH = 100       # sweep a topic once this many msgs age out
 DISTILL_INTERVAL = 600        # seconds between distiller sweeps

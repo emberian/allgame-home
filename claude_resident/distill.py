@@ -30,6 +30,7 @@ from claude_resident.config import (
     DISTILL_LOAD_MAX_CHARS,
 )
 from claude_resident.state import _atomic_write
+from claude_resident.sdk_call import complete as sdk_complete
 
 logger = logging.getLogger("distill")
 
@@ -141,14 +142,11 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
         f"{log_rel}):\n<aged_history>\n" + "\n".join(chunk_lines)
         + f"\n</aged_history>\n\nRewrite the digest folding the new "
         f"material in. Hard ceiling: {DISTILL_HITS_MAX_CHARS} characters.")
-    response = anthropic_client.messages.create(
-        model=DISTILL_MODEL,
-        max_tokens=4000,
-        system=DISTILLER_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    hits = "".join(b.text for b in response.content
-                   if getattr(b, "type", "") == "text").strip()
+    # Plan limits via the SDK, not metered credit — and on Opus: these
+    # volumes are sealed forever and become what he remembers of his own
+    # past, so this is the wrong place to economize (Ember, 2026-07-30).
+    hits = sdk_complete(prompt, system=DISTILLER_SYSTEM,
+                        model=DISTILL_MODEL).strip()
     if not hits:
         return False
     hits = hits[:DISTILL_HITS_MAX_CHARS]
