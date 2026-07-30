@@ -174,9 +174,11 @@ POSTMARK_REFRESH_SECONDS = 4 * 3600  # doorstep regen is 30min; mail moves 2x/da
 POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 
 # --- Response engine ---------------------------------------------------
-# "api": the direct Messages-API tool loop (raw API on the subscription —
-# note: serves Haiku only without an extra-usage balance, so this is a
-# degraded fallback, not an equivalent).
+# "api": the direct Messages-API tool loop. NOT A WORKING FALLBACK on this
+# auth: the raw Messages API on a subscription token 429s for Opus/Sonnet
+# and draws metered extra-usage credit for Haiku (which has been dry). It
+# remains only as reference/for an API-key deployment — don't reach for it
+# expecting a soft landing.
 # "agent_sdk": Claude Code as a library, authenticated with the resident's
 # own subscription (tokeman token) — draws PLAN LIMITS, flat-rate, the
 # sanctioned path after the 2026-04 extra-usage change gated raw-API access.
