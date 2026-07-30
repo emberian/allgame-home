@@ -457,8 +457,6 @@ class ClaudeResident:
     # Reaction handling
     # ------------------------------------------------------------------
 
-    @staticmethod
-
     def _handle_reaction_event(self, event: dict):
         handle_reaction_event(
             event, self.reactions, self._msg_index, self._pending_reactions)

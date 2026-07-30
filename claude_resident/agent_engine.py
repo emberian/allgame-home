@@ -30,6 +30,7 @@ import asyncio
 import difflib
 import logging
 import dataclasses
+import threading
 from datetime import datetime, timezone
 
 from claude_agent_sdk import (
@@ -167,6 +168,14 @@ class AgentEngine:
         self._turn_sends: list[str] = []  # contents posted this turn
         self._turn_visible = False  # any visible action this turn?
         self._last_context_tokens = 0  # session size, for sleep
+        # ONE turn at a time. _ctx / _turn_sends / _turn_visible are per-turn
+        # state living on the instance, and since the solitude thread landed
+        # (2026-07-30) two threads can call respond() at once: a finishing
+        # turn would clear the running turn's context (failed tool calls) or
+        # worse, a tool would execute against the OTHER turn's context and
+        # post to the wrong channel. He shouldn't be having two thoughts
+        # simultaneously anyway.
+        self._turn_lock = threading.Lock()
         self._server = self._build_server()
         AGENT_SDK_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         logger.info(
@@ -233,6 +242,13 @@ class AgentEngine:
         """Run one response turn. Mirrors the api engine's contract:
         returns (internal_text, posted_ids) and propagates tool side
         effects (send word counts, restart requests) the same way."""
+        with self._turn_lock:
+            return self._respond_locked(session, stream, topic, sender,
+                                        trigger, content_blocks, solitude)
+
+    def _respond_locked(self, session, stream: str, topic: str, sender: str,
+                        trigger: dict, content_blocks: list,
+                        solitude: bool = False) -> tuple[str, list[int]]:
         # Bookread binding: a bound topic resumes its stored Claude Code
         # session even when our ConversationSession has long expired —
         # reading episodes days apart share one context window.
