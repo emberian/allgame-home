@@ -329,6 +329,23 @@ class ClaudeResident:
         # System-1 backchannel: the Haiku engagement judge let this message
         # through and left a note. Appended after the message so it reads as a
         # margin note on what was just received — your reflex layer radioing in.
+        # Frank's asides from messages you never saw — he watches the room
+        # continuously and declines most of it on your behalf; these are the
+        # notes he left about what he waved past. Private channel: context
+        # only, never posted.
+        backlog = self.judge.drain_remarks(stream, topic)
+        if backlog:
+            lines = []
+            for n in backlog:
+                mark = "·" if n.get("decision") == "NO" else "»"
+                lines.append(f"  {mark} [{fmt_log_time(n['ts'])}] "
+                             f"re {n.get('about', '?')}: {n['remark']}")
+            content_blocks.append({"type": "text", "text":
+                "<franks_notes>\nFrank, on messages he handled while you "
+                "were away (· = he declined it for you, » = he passed it "
+                "through). He is the only one who sees what you don't:\n"
+                + "\n".join(lines) + "\n</franks_notes>"})
+
         if judge_remark:
             remark_text = ("<judge_remark>\n"
                            "A note from your engagement judge (Haiku / your "

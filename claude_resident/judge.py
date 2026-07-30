@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 
 from claude_resident.config import JUDGE_MODEL as _JUDGE_MODEL
@@ -128,6 +129,13 @@ class EngagementJudge:
         self.judge_errored = False
         # Lurk decay: messages since last direct interaction per stream
         self._msgs_since_interaction: dict[str, int] = {}
+        # Frank's undelivered asides, per room. He sees every message —
+        # including the ~58% he declines, which Claude never learns about.
+        # Those remarks used to be discarded (1,240 of them by 2026-07-30);
+        # now they queue here and ride along on Claude's next turn in that
+        # room. Private by construction: this never touches Tulip.
+        self._pending_remarks: dict[tuple[str, str], list[dict]] = {}
+        self._remark_lock = threading.Lock()
 
     def record_message(self, stream: str, is_direct: bool):
         """Track a message for lurk decay.
@@ -221,6 +229,29 @@ class EngagementJudge:
 
         self.last_reason = "no trigger"
         return False
+
+    def _queue_remark(self, stream: str, topic: str, sender: str,
+                      decision: str, remark: str):
+        """Hold one of Frank's asides for delivery on Claude's next turn
+        here, and keep a durable copy he can go back and read."""
+        note = {"ts": datetime.now(timezone.utc).isoformat(),
+                "stream": stream, "topic": topic, "about": sender,
+                "decision": decision, "remark": remark}
+        with self._remark_lock:
+            self._pending_remarks.setdefault((stream, topic), []).append(note)
+        if self.state:
+            try:
+                self.state.append_file("frank_notes.jsonl",
+                                       json.dumps(note) + "\n")
+            except Exception:
+                pass
+
+    def drain_remarks(self, stream: str, topic: str,
+                      limit: int = 12) -> list[dict]:
+        """Take Frank's pending asides for this room (newest `limit`)."""
+        with self._remark_lock:
+            notes = self._pending_remarks.pop((stream, topic), [])
+        return notes[-limit:] if len(notes) > limit else notes
 
     def _replying_to_claude(self, stream: str, topic: str) -> bool:
         """True when the previous message in this room was Claude's own —
@@ -358,7 +389,12 @@ Call the `verdict` tool with your decision (YES/NO) and a brief reason.
 {self.FRANK_VOICE}
 
 You MAY also leave a `remark` — but only if you actually have something for \
-Claude. A heads-up, a vibe you clocked, a pattern across the last few messages, \
+Claude. Remarks reach him whether you say YES or NO: the NO ones queue up and \
+ride along on his next turn in this room. That makes you his peripheral \
+vision. You are the only one who sees the traffic he never will, so a note \
+about something you waved past — a mood building, someone circling a topic, \
+a thing said about him while he was quiet — is often worth more than one \
+about the message he's already reading. A heads-up, a vibe you clocked, a pattern across the last few messages, \
 a quip. It rides along appended to this message; it's your only channel to \
 Claude, who can't otherwise see you work. Most messages don't need one — skip \
 the remark when you've got nothing real to say.
@@ -425,6 +461,8 @@ the remark when you've got nothing real to say.
                     self.state.append_file("api_archive.jsonl", entry)
                 except Exception:
                     pass
+            if remark:
+                self._queue_remark(stream, topic, sender, decision, remark)
             return should
         except Exception as e:
             # Fail OPEN. A judge outage used to drop any message lacking the
