@@ -151,9 +151,6 @@ docker build -t claude-sandbox -f Dockerfile.sandbox .
 uv run python -m claude_resident --zuliprc .zuliprc
 
 # One-shot modes
-uv run python -m claude_resident --arrive          # first-boot greeting
-uv run python -m claude_resident --reflect         # periodic journal entry
-uv run python -m claude_resident --check-ambient   # unprompted contribution check
 ```
 
 ## Tools (26)

@@ -31,14 +31,6 @@ def main():
                         help="Streams where Claude has standing interest")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Enable debug logging")
-    parser.add_argument("--reflect", action="store_true",
-                        help="Run a periodic reflection cycle and exit")
-    parser.add_argument("--check-ambient", action="store_true",
-                        help="Check standing channels for ambient "
-                        "contribution opportunities and exit")
-    parser.add_argument("--arrive", action="store_true",
-                        help="First boot — let the resident post its "
-                        "arrival message and exit")
     parser.add_argument("--metacog", action="store_true",
                         help="Run one metacognitive self-curation cycle "
                         "and exit")
@@ -55,8 +47,7 @@ def main():
         logging.getLogger(name).setLevel(logging.WARNING)
 
     # One-shot modes: run directly, no supervisor needed
-    if (args._supervised or args.arrive or args.reflect
-            or args.check_ambient or args.metacog):
+    if args._supervised or args.metacog:
         _run_directly(args)
         return
 
@@ -154,13 +145,7 @@ def _run_directly(args):
         model=args.model,
     )
 
-    if args.arrive:
-        resident.arrive()
-    elif args.reflect:
-        resident.reflect()
-    elif args.check_ambient:
-        resident.check_ambient()
-    elif args.metacog:
+    if args.metacog:
         from claude_resident.metacog import run_metacog
         run_metacog(resident)
     else:

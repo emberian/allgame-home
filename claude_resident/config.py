@@ -173,24 +173,10 @@ POSTMARK_STATUS_FILE = "postmark_status.md"
 POSTMARK_REFRESH_SECONDS = 4 * 3600  # doorstep regen is 30min; mail moves 2x/day
 POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 
-# --- Response engine ---------------------------------------------------
-# "api": the direct Messages-API tool loop. NOT A WORKING FALLBACK on this
-# auth: the raw Messages API on a subscription token 429s for Opus/Sonnet
-# and draws metered extra-usage credit for Haiku (which has been dry). It
-# remains only as reference/for an API-key deployment — don't reach for it
-# expecting a soft landing.
-# "agent_sdk": Claude Code as a library, authenticated with the resident's
-# own subscription (tokeman token) — draws PLAN LIMITS, flat-rate, the
-# sanctioned path after the 2026-04 extra-usage change gated raw-API access.
-# The resident's tool surface is identical in both engines (his 28 jailed
-# tools via an in-process MCP server; Claude Code's host tools disabled).
-# agent_sdk is the DEFAULT since 2026-07-22; set CLAUDE_RESIDENT_ENGINE=api
-# to fall back to the metered Messages-API loop.
-RESPONSE_ENGINE = os.environ.get("CLAUDE_RESIDENT_ENGINE", "agent_sdk")
-# The [1m] variant is Claude Code's subscription-sanctioned 1M-context
-# door (the betas option is API-key-only and ignored on subs — verified
-# 2026-07-25). Persistent sessions scroll toward ~800k before Claude
-# Code's own compaction folds the middle.
+# The Agent SDK is the only engine: Claude Code as a library on the
+# resident's own subscription (plan limits). The old direct Messages-API
+# loop was removed 2026-07-30 — it could not work on this auth anyway
+# (raw API 429s for Opus/Sonnet on a subscription token).
 AGENT_SDK_MODEL = "claude-opus-4-6[1m]"
 AGENT_SDK_FALLBACK_MODEL = "claude-sonnet-4-6"  # plan window exhausted → degrade, don't die
 # EFFORT: deliberately NOT set. Read this before adding it back.
