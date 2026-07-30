@@ -339,6 +339,7 @@ class AgentEngine:
 
         self._turn_sends = []
         self._turn_visible = False
+        self._last_context_tokens = 0
         ctx = ToolContext(
             state=self.resident.state,
             zulip_client=self.resident.zulip,
@@ -548,16 +549,22 @@ class AgentEngine:
                             {"type": "tool_use", "name": name, "input": tin,
                              "id": getattr(block, "id", "")})
                 self._archive(stream, topic, sender, turn, msg, blocks)
+                # Context size = ONE model call's read+write+input. Never
+                # ResultMessage.usage, which sums every call in the turn and
+                # so reported ~3x reality (a 1.06M "session" that fired the
+                # sleep threshold on a ~500k room, 2026-07-29).
+                mu = getattr(msg, "usage", None)
+                if isinstance(mu, dict):
+                    self._last_context_tokens = max(
+                        self._last_context_tokens,
+                        mu.get("cache_read_input_tokens", 0)
+                        + mu.get("cache_creation_input_tokens", 0)
+                        + mu.get("input_tokens", 0))
                 turn += 1
             elif isinstance(msg, ResultMessage):
                 if msg.session_id:
                     session.sdk_session_id = msg.session_id
-                u = msg.usage or {}
-                if isinstance(u, dict):
-                    self._last_context_tokens = (
-                        u.get("cache_read_input_tokens", 0)
-                        + u.get("cache_creation_input_tokens", 0)
-                        + u.get("input_tokens", 0))
+
                 cost = msg.total_cost_usd
                 logger.info(
                     f"Agent SDK turn done: #{stream}>{topic} "
