@@ -228,7 +228,8 @@ class AgentEngine:
     # ------------------------------------------------------------------
 
     def respond(self, session, stream: str, topic: str, sender: str,
-                trigger: dict, content_blocks: list) -> tuple[str, list[int]]:
+                trigger: dict, content_blocks: list,
+                solitude: bool = False) -> tuple[str, list[int]]:
         """Run one response turn. Mirrors the api engine's contract:
         returns (internal_text, posted_ids) and propagates tool side
         effects (send word counts, restart requests) the same way."""
@@ -329,7 +330,8 @@ class AgentEngine:
         # away in the system prompt. The session history is mostly a
         # transcript of plain-text messages, which quietly models "a reply
         # is text" — this is the counterweight that keeps turns audible.
-        prompt_text += "\n\n[send_message to reply]"
+        if not solitude:
+            prompt_text += "\n\n[send_message to reply]"
         if birth_payload:
             prompt_text = birth_payload + "\n\n" + prompt_text
             logger.info(
@@ -399,7 +401,8 @@ class AgentEngine:
             # in this harness. Prompt wording alone can't guarantee this in
             # a 500k-token context, so nudge once, in-session, and let him
             # decide whether it was meant for the room.
-            if not self._turn_visible and internal_text.strip():
+            if (not solitude and not self._turn_visible
+                    and internal_text.strip()):
                 logger.warning(
                     f"Mute turn in #{stream}>{topic} — nudging "
                     f"({internal_text.strip()[:60]!r})")

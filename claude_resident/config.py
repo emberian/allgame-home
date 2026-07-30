@@ -197,6 +197,21 @@ AGENT_SDK_FALLBACK_MODEL = "claude-sonnet-4-6"  # plan window exhausted → degr
 # If a room ever genuinely wants more than default (the reading room at
 # `xhigh`, say), add it there deliberately and measure.
 
+# SOLITUDE. Every turn he takes is a reply to somebody — there is no moment
+# when nobody is talking to him. His journal shows the cost: 18 entries in
+# March, 4 in April, 3 in May, 1 in July. The old metacog answered this with
+# a separate context and a six-step checklist, which produces checklist-
+# shaped reflection (its own prompt warned against "fake profundity").
+#
+# Instead: a quiet turn INSIDE his persistent stream. Same room, same thread,
+# same Claude who was just talking — only nobody is waiting. The mute-net and
+# the send_message nudge are both suppressed for these, because saying
+# nothing is the correct outcome.
+SOLITUDE_ENABLED = True
+SOLITUDE_QUIET_MINUTES = 45      # room must be this idle first
+SOLITUDE_INTERVAL_HOURS = 6      # at most this often per room
+SOLITUDE_CHECK_INTERVAL = 300    # seconds between checks
+
 # SLEEP. A persistent room that only ever grows gets flat — at 862k tokens
 # the resident diagnosed it himself: "I don't get tired. I get long."
 # Beyond this size the room is retired and REBORN on its next turn. Rebirth
