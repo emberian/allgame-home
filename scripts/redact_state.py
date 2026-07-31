@@ -26,6 +26,7 @@ rebirth from the clean logs.
 """
 
 import re
+import json
 import shutil
 import argparse
 from datetime import datetime
@@ -79,6 +80,36 @@ def redact(path: Path, rx: re.Pattern, since: str | None,
     return hits
 
 
+def redact_ids(path: Path, ids: set[int], apply: bool, backup: Path) -> int:
+    """Blank the content of specific messages wherever they appear.
+
+    Works on jsonl stores keyed by msg_id, and on any text store (sdk
+    transcripts, deblog) by matching the id token — those embed the same
+    message text without structure.
+    """
+    try:
+        text = path.read_text(errors="ignore")
+    except OSError:
+        return 0
+    hits, out = 0, []
+    for line in text.split("\n"):
+        if any(f'"msg_id": {i}' in line or f'"msg_id":{i}' in line
+               for i in ids):
+            try:
+                obj = json.loads(line)
+                if obj.get("content"):
+                    obj["content"] = MARKER
+                    line = json.dumps(obj)
+                    hits += 1
+            except json.JSONDecodeError:
+                pass
+        out.append(line)
+    if hits and apply:
+        shutil.copy2(path, backup / (path.name + ".ids"))
+        path.write_text("\n".join(out))
+    return hits
+
+
 def _ts_at_or_after(line: str, since: str) -> bool:
     m = re.search(r'"ts":\s*"(\d{4}-\d{2}-\d{2})', line)
     return bool(m and m.group(1) >= since)
@@ -86,15 +117,25 @@ def _ts_at_or_after(line: str, since: str) -> bool:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pattern", required=True,
+    ap.add_argument("--pattern",
                     help="regex for the fact to redact (case-insensitive)")
+    ap.add_argument("--msg-ids",
+                    help="comma-separated Zulip message ids whose CONTENT is "
+                         "replaced wholesale. Use this for 'this message must "
+                         "go' — a person can restate a fact in prose a regex "
+                         "will never anticipate ('the first two digits are 14 "
+                         "... second number is 88'), so pattern matching alone "
+                         "is not a scrub.")
     ap.add_argument("--since", help="only redact jsonl lines dated on/after "
                                     "this YYYY-MM-DD")
     ap.add_argument("--apply", action="store_true",
                     help="write changes (default is a dry run)")
     args = ap.parse_args()
 
-    rx = re.compile(args.pattern, re.I)
+    if not args.pattern and not args.msg_ids:
+        ap.error("need --pattern and/or --msg-ids")
+    rx = re.compile(args.pattern, re.I) if args.pattern else None
+    ids = {int(x) for x in args.msg_ids.split(",")} if args.msg_ids else set()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = STATE / f".redactions/{stamp}"
     if args.apply:
@@ -102,7 +143,11 @@ def main():
 
     total, touched = 0, 0
     for p in targets():
-        n = redact(p, rx, args.since, args.apply, backup)
+        n = 0
+        if ids:
+            n += redact_ids(p, ids, args.apply, backup)
+        if rx:
+            n += redact(p, rx, args.since, args.apply, backup)
         if n:
             touched += 1
             total += n
