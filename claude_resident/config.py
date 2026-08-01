@@ -14,6 +14,10 @@ DEFAULT_STATE_DIR = Path.home() / "claude_state"
 # Messages API serves for subscription tokens); invoke_model routes
 # through the Agent SDK so nested Sonnet/Opus calls stay plan-limited.
 TOKEMAN_TOKENS_PATH = Path.home() / ".config" / "tokeman" / "tokens.toml"
+# Starting preference only. auth.py probes `tokeman --json` and runs on the
+# healthiest account, rotating when one is rejected — plan limits are
+# per-account and tokeman holds several. Selection is STICKY: each account
+# has its own prompt cache, so a switch costs a full re-prefill.
 TOKEMAN_ACCOUNT = "boto@ember.software"
 OAUTH_BETA = "oauth-2025-04-20"  # required when authing with an OAuth token
 

@@ -42,7 +42,7 @@ from claude_agent_sdk import (
     tool,
 )
 
-from claude_resident.auth import read_oauth_token
+from claude_resident.auth import read_oauth_token, rotate_account
 from claude_resident.config import (
     AGENT_SDK_MODEL,
     AGENT_SDK_FALLBACK_MODEL,
@@ -65,6 +65,15 @@ logger = logging.getLogger("agent_engine")
 # Tools whose successful use means the community actually heard something.
 # A turn with none of these is MUTE — its text went nowhere.
 VISIBLE_TOOLS = {"send_message", "send_dm", "add_reaction"}
+
+# Rejections that mean "this account is out", not "this turn failed".
+_LIMIT_MARKERS = ("weekly limit", "usage limit", "rate limit",
+                  "hit your limit", "resets ", "quota")
+
+
+def _is_limit_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _LIMIT_MARKERS)
 
 # Engine-specific realities appended to the system prompt each turn — the
 # base SYSTEM_PROMPT stays single-source for both engines.
@@ -341,6 +350,15 @@ class AgentEngine:
                     "not a digression from it.\n\n"
                     + "\n\n".join(life) + "\n</life_update>")
 
+        # Cache forensics: the system prompt is the cached prefix, so any
+        # byte that changes between turns re-prefills the whole thing. Log
+        # a hash so a silent invalidator shows up as a changing digest on
+        # consecutive turns in the same room.
+        import hashlib
+        sys_hash = hashlib.sha256(system_text.encode()).hexdigest()[:8]
+        logger.info(f"System prompt for #{stream}>{topic}: "
+                    f"{len(system_text):,} chars, hash={sys_hash}")
+
         prompt_text = self._flatten_content(content_blocks)
         # Per-turn reminder, placed where he acts rather than 550k tokens
         # away in the system prompt. The session history is mostly a
@@ -409,9 +427,28 @@ class AgentEngine:
         )
 
         try:
-            internal_text, assistant_record = asyncio.run(
-                self._run_turn(prompt_text, options, session,
-                               stream, topic, sender))
+            try:
+                internal_text, assistant_record = asyncio.run(
+                    self._run_turn(prompt_text, options, session,
+                                   stream, topic, sender))
+            except RuntimeError as e:
+                # Plan limits are per ACCOUNT, and tokeman holds several.
+                # A weekly/session rejection means this account is spent,
+                # not that he has nothing to say — rotate and retry once.
+                if not _is_limit_error(e):
+                    raise
+                nxt = rotate_account()
+                if not nxt:
+                    raise
+                logger.warning(
+                    f"Limit hit mid-turn; retrying #{stream}>{topic} on "
+                    f"{nxt}")
+                options.env["CLAUDE_CODE_OAUTH_TOKEN"] = \
+                    read_oauth_token() or ""
+                # The new account has a cold cache — this turn re-prefills.
+                internal_text, assistant_record = asyncio.run(
+                    self._run_turn(prompt_text, options, session,
+                                   stream, topic, sender))
             # Mute-turn net: a turn that produced text but called no visible
             # tool means the reply went nowhere — text output is invisible
             # in this harness. Prompt wording alone can't guarantee this in

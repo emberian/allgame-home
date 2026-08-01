@@ -15,8 +15,11 @@ Who uses what:
   lm_tools so Sonnet/Opus nested calls also draw plan limits.
 """
 
+import json
+import time
 import logging
 import tomllib
+import subprocess
 
 import anthropic
 
@@ -30,18 +33,94 @@ from claude_resident.config import (
 logger = logging.getLogger("auth")
 
 
-def read_oauth_token() -> str | None:
-    """Read the resident's OAuth token from the tokeman file."""
+_PROBE_CACHE: dict = {"at": 0.0, "rows": []}
+_ACTIVE: dict = {"account": None}
+
+
+def probe_accounts(max_age: float = 60.0) -> list[dict]:
+    """Ask tokeman how every account is doing. Cached briefly — this shells
+    out and gets called on every token read."""
+    now = time.time()
+    if now - _PROBE_CACHE["at"] < max_age and _PROBE_CACHE["rows"]:
+        return _PROBE_CACHE["rows"]
+    try:
+        out = subprocess.run(["tokeman", "--json"], capture_output=True,
+                             text=True, timeout=30)
+        rows = json.loads(out.stdout) if out.returncode == 0 else []
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        logger.warning(f"tokeman probe failed: {e}")
+        rows = []
+    _PROBE_CACHE.update(at=now, rows=rows)
+    return rows
+
+
+def _health(row: dict) -> tuple[int, float]:
+    """Sort key: usable first, then least-used. Lower is better."""
+    q = row.get("quota") or {}
+    status = q.get("status", "unknown")
+    weekly = ((q.get("weekly") or {}).get("utilization") or 0.0)
+    rank = {"allowed": 0, "allowed_warning": 1}.get(status, 2)
+    return (rank, weekly)
+
+
+def choose_account(prefer: str | None = None) -> str | None:
+    """Pick an account to run on.
+
+    STICKY on purpose: each account has its own prompt cache, so switching
+    costs a full re-prefill of whatever room is talking (~500k tokens).
+    We keep the current account while it is merely busy, and move only when
+    it is actually rejected.
+    """
+    rows = probe_accounts()
+    if not rows:
+        return prefer or TOKEMAN_ACCOUNT
+    by_name = {r.get("token_name"): r for r in rows}
+    cur = prefer or _ACTIVE["account"] or TOKEMAN_ACCOUNT
+    if cur in by_name and _health(by_name[cur])[0] == 0:
+        return cur  # still healthy — don't thrash the cache
+    healthy = sorted((r for r in rows if _health(r)[0] < 2), key=_health)
+    if not healthy:
+        logger.error("tokeman: every account is rejected")
+        return cur
+    pick = healthy[0].get("token_name")
+    if pick != cur:
+        q = healthy[0].get("quota") or {}
+        wk = ((q.get("weekly") or {}).get("utilization") or 0) * 100
+        logger.warning(f"Rotating account: {cur} → {pick} "
+                       f"(weekly {wk:.0f}% used)")
+    return pick
+
+
+def rotate_account() -> str | None:
+    """Force a re-probe and move off the current account."""
+    _PROBE_CACHE["at"] = 0.0
+    rows = probe_accounts()
+    cur = _ACTIVE["account"] or TOKEMAN_ACCOUNT
+    healthy = sorted((r for r in rows
+                      if _health(r)[0] < 2 and r.get("token_name") != cur),
+                     key=_health)
+    if not healthy:
+        logger.error(f"No account available to rotate to (current {cur})")
+        return None
+    _ACTIVE["account"] = healthy[0].get("token_name")
+    logger.warning(f"Rotated off {cur} → {_ACTIVE['account']}")
+    return _ACTIVE["account"]
+
+
+def read_oauth_token(account: str | None = None) -> str | None:
+    """The OAuth token for the healthiest available account."""
     try:
         with open(TOKEMAN_TOKENS_PATH, "rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as e:
         logger.warning(f"Could not read tokeman tokens: {e}")
         return None
+    name = account or _ACTIVE["account"] or choose_account()
+    _ACTIVE["account"] = name
     for entry in data.get("tokens", []):
-        if entry.get("name") == TOKEMAN_ACCOUNT:
+        if entry.get("name") == name:
             return entry.get("key") or None
-    logger.warning(f"No tokeman token named {TOKEMAN_ACCOUNT}")
+    logger.warning(f"No tokeman token named {name}")
     return None
 
 
