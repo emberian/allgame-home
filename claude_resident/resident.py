@@ -187,6 +187,13 @@ class ClaudeResident:
         # Gives the human a beat to see their own message land. ---
         time.sleep(COOLDOWN_SECONDS)
 
+        # The judge has committed us to replying, so start the indicator HERE
+        # rather than just before the API call. Everything below — the typing
+        # hold-off, the burst sweep, session lookup, state fingerprinting and
+        # the whole prompt build — used to happen in silence, so the room saw
+        # nothing for seconds and then a sudden reply.
+        typing_stop = self._start_typing(stream, topic)
+
         # --- Typing hold-off: wait if someone is actively typing ---
         self._wait_for_typing(stream, topic)
 
@@ -388,14 +395,7 @@ class ClaudeResident:
                 f"Session over budget ({est_tokens} tokens), trimming")
             _trim_session(session, self.logger)
 
-        # --- Generate response ---
-        self._send_typing(stream, topic, "start")
-        typing_stop = threading.Event()
-        def _typing_pulse():
-            while not typing_stop.wait(10):
-                self._send_typing(stream, topic, "start")
-        typing_thread = threading.Thread(target=_typing_pulse, daemon=True)
-        typing_thread.start()
+        # --- Generate response (already typing since the cooldown) ---
         try:
             internal_text, posted_ids = self.agent_engine.respond(
                 session, stream, topic, sender, batch[-1], content_blocks)
@@ -405,8 +405,7 @@ class ClaudeResident:
             self.sessions.remove(stream, topic)
             return
         finally:
-            typing_stop.set()
-            self._send_typing(stream, topic, "stop")
+            typing_stop.set()   # the pulse thread sends the stop
 
         # The response turn completed (posted or deliberate silence) — record
         # every batched message as handled so a restart never replays them.
@@ -485,6 +484,32 @@ class ClaudeResident:
     # ------------------------------------------------------------------
     # Typing indicator
     # ------------------------------------------------------------------
+
+    def _start_typing(self, stream: str, topic: str,
+                      max_seconds: float = 300.0) -> threading.Event:
+        """Show the typing indicator and keep it alive until stopped.
+
+        Zulip expires an indicator ~15s after the last start event, so it
+        needs a pulse. The deadline is a backstop: if the caller dies
+        before clearing the event, the thread stops on its own instead of
+        leaving the room with a permanently typing resident.
+        """
+        self._send_typing(stream, topic, "start")
+        stop = threading.Event()
+        deadline = time.time() + max_seconds
+
+        def _pulse():
+            while not stop.wait(10):
+                if time.time() > deadline:
+                    self.logger.warning(
+                        f"Typing indicator for #{stream}>{topic} hit its "
+                        f"{max_seconds:.0f}s cap — stopping")
+                    break
+                self._send_typing(stream, topic, "start")
+            self._send_typing(stream, topic, "stop")
+
+        threading.Thread(target=_pulse, daemon=True).start()
+        return stop
 
     def _handle_typing_event(self, event: dict):
         """Track typing start/stop events from Zulip."""
