@@ -1,6 +1,8 @@
 """Web tools: search and fetch URLs."""
 
 import os
+import re as _re
+import html as _html
 import base64
 import logging
 
@@ -8,6 +10,18 @@ logger = logging.getLogger("tools.web")
 
 
 def web_search(inp: dict) -> dict:
+    """Kagi Search API v1.
+
+    v0 is the legacy endpoint and draws on a prepaid credit pot that is no
+    longer topped up — it fails with "Insufficient credit" and an
+    api_balance of 0 no matter how the account is configured. v1 is the
+    live, usage-invoiced API and needs its own key (a v0 key 401s here).
+
+    Shape differences from v0, all of them load-bearing:
+      GET  ?q=      ->  POST {"query": ...}
+      Authorization: Bot   ->  Bearer
+      data: [ {t:0, ...} ] ->  data.search: [ {url,title,snippet,...} ]
+    """
     query = inp.get("query", "")
     limit = min(inp.get("limit", 10), 20)
 
@@ -20,50 +34,49 @@ def web_search(inp: dict) -> dict:
 
     try:
         import requests as _requests
-        response = _requests.get(
-            "https://kagi.com/api/v0/search",
-            headers={"Authorization": f"Bot {kagi_key}"},
-            params={"q": query, "limit": limit},
-            timeout=15,
+        response = _requests.post(
+            "https://kagi.com/api/v1/search",
+            headers={"Authorization": f"Bearer {kagi_key}",
+                     "Content-Type": "application/json"},
+            json={"query": query},
+            timeout=20,
         )
 
         try:
             data = response.json()
-        except Exception:
+        except ValueError:
             data = {}
 
         if response.status_code != 200:
-            errors = data.get("error", [])
-            if errors:
-                err_msg = "; ".join(
-                    e.get("msg", str(e)) for e in errors)
-            else:
-                err_msg = f"HTTP {response.status_code}"
-            balance = data.get("meta", {}).get("api_balance", "?")
-            logger.error(
-                f"Kagi search failed: {err_msg} (balance: ${balance})")
-            return {"content": f"Kagi search error: {err_msg} "
-                    f"(balance: ${balance})", "is_error": True}
+            errs = data.get("errors") or []
+            msg = "; ".join(e.get("message", str(e)) for e in errs) \
+                or f"HTTP {response.status_code}"
+            logger.error(f"Kagi search failed: {msg}")
+            return {"content": f"Kagi search error: {msg}", "is_error": True}
 
+        items = ((data.get("data") or {}).get("search")) or []
         results = []
-        for item in data.get("data", []):
-            if item.get("t") == 0:
-                title = item.get("title", "")
-                url = item.get("url", "")
-                snippet = item.get("snippet", "")
-                results.append(f"**{title}**\n{url}\n{snippet}")
+        for item in items[:limit]:
+            title = _clean(item.get("title", ""))
+            url = item.get("url", "")
+            snippet = _clean(item.get("snippet", ""))
+            results.append(f"**{title}**\n{url}\n{snippet}")
 
         if not results:
             return {"content": "No results found."}
 
-        balance = data.get("meta", {}).get("api_balance", "?")
-        header = (f"[{len(results)} results for: {query}] "
-                  f"(API balance: ${balance})")
         logger.info(f"Web search: '{query}' — {len(results)} results")
-        return {"content": header + "\n\n" + "\n\n".join(results[:limit])}
+        return {"content": f"[{len(results)} results for: {query}]\n\n"
+                + "\n\n".join(results)}
 
     except Exception as e:
+        logger.error(f"Kagi search failed: {e}")
         return {"content": f"Search error: {e}", "is_error": True}
+
+
+def _clean(text: str) -> str:
+    """Kagi returns HTML-escaped text with <strong> hit markers."""
+    return _html.unescape(_re.sub(r"</?strong>", "", text or "")).strip()
 
 
 _TEXT_CONTENT_HINTS = (
