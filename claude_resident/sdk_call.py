@@ -44,6 +44,12 @@ async def _run(prompt: str, system: str, model: str, max_turns: int) -> str:
         },
     )
     parts: list[str] = []
+    failure: str | None = None
+    # Do NOT raise from inside the iteration: an exception there escapes
+    # while the SDK's async generator is still running, and its cleanup
+    # then dies with "aclose(): asynchronous generator is already running",
+    # taking the whole process down instead of just this call. Record the
+    # failure, let the generator finish, raise afterwards.
     async for msg in query(prompt=prompt, options=options):
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
@@ -51,17 +57,22 @@ async def _run(prompt: str, system: str, model: str, max_turns: int) -> str:
                 if text:
                     parts.append(text)
         elif isinstance(msg, ResultMessage) and msg.is_error:
-            raise RuntimeError(f"sdk_call error: {msg.result!r}")
+            failure = f"sdk_call error: {msg.result!r}"
+    if failure:
+        raise RuntimeError(failure)
     return "\n".join(parts).strip()
 
 
 def complete(prompt: str, system: str = "", model: str | None = None,
-             max_turns: int = 1) -> str:
+             max_turns: int = 1, big_context: bool = False) -> str:
     """Run one completion on plan limits. Raises on failure.
 
     Safe to call from the harness's background threads (reaper, distiller)
     and from the event loop — each call is its own subprocess and no event
     loop is running in those threads.
     """
-    return asyncio.run(_run(prompt, system,
-                            model or MODEL_IDS["sonnet"], max_turns))
+    chosen = model or MODEL_IDS["sonnet"]
+    if big_context and not chosen.endswith("[1m]"):
+        # A whole era of chat can exceed the 200k default window.
+        chosen += "[1m]"
+    return asyncio.run(_run(prompt, system, chosen, max_turns))

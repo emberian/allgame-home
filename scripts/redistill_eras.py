@@ -79,7 +79,9 @@ def rebuild(stream: str, topic: str, only: range | None, apply: bool):
 
         try:
             new = complete(prompt, system=DISTILLER_SYSTEM,
-                           model=DISTILL_MODEL).strip()[:DISTILL_HITS_MAX_CHARS]
+                           model=DISTILL_MODEL,
+                           big_context=True
+                           ).strip()[:DISTILL_HITS_MAX_CHARS]
         except Exception as e:
             print(f"  vol {i}: FAILED ({e}) — keeping the old one")
             continue
