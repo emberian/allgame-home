@@ -265,9 +265,10 @@ PERSISTENT_BIRTH_RAW_CHARS = 1_600_000
 
 # Streams where Claude has standing interest (will read ambient conversation).
 DEFAULT_STANDING_STREAMS = [
-    "allgame",       # the main stream — all topics within it
-    "clankerville",  # the LLM/clanker neighborhood
-    "gemmazone",     # Gemma's stream — Claude only responds to @-mentions here
+    "allgame",         # the main stream — all topics within it
+    "clankerville",    # the LLM/clanker neighborhood
+    "gemmazone",       # Gemma's stream — Claude only responds to @-mentions here
+    "cislunar-space",  # ambient, like clankerville — he participates unprompted
 ]
 
 # Streams where Claude only responds to direct @-mentions (no ambient judge).
