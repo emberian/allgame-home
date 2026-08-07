@@ -94,6 +94,15 @@ def read_state_file(inp: dict, state) -> dict:
     full_path = state.root / path
     if not full_path.exists():
         return {"content": f"File not found: {path}", "is_error": True}
+    if full_path.is_dir():
+        # Reading a directory used to raise IsADirectoryError straight out of
+        # read_text() — an opaque tool failure that cost him the turn. Name the
+        # right tool and hand back the listing so the turn isn't wasted.
+        listing = list_state_files({"directory": path}, state)
+        return {"content": f"{path} is a directory — use list_state_files "
+                           f"(or glob_state_files) for directories. "
+                           f"Its contents:\n{listing['content']}",
+                "is_error": True}
     try:
         content = full_path.read_text()
     except (UnicodeDecodeError, ValueError):
