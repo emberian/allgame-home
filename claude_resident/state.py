@@ -35,6 +35,19 @@ def _reaction_suffix(msg_id, reactions) -> str:
     rxn_str = ", ".join(f"{e}x{c}" for e, c in sorted(rxns.items()) if c > 0)
     return f" [{rxn_str}]" if rxn_str else ""
 
+
+def _apply_edit(msg: dict, edits: dict[int, str]) -> tuple[str, str]:
+    """Fold the newest edit over a logged message.
+
+    Returns (content, suffix). The suffix is Zulip's own "(edited)" marker,
+    so he reads the room exactly the way every human in it does — current
+    text, plus the knowledge that it changed under him."""
+    content = msg.get("content", "")
+    msg_id = msg.get("msg_id")
+    if edits and msg_id is not None and msg_id in edits:
+        return edits[msg_id], " (edited)"
+    return content, ""
+
 logger = logging.getLogger("state_manager")
 
 
@@ -174,6 +187,76 @@ class StateManager:
         # Loading is bounded by token budgets; storage never is. Aged
         # history gets distilled into per-topic hits by distill.py.
 
+    # --- Edits -------------------------------------------------------
+    # An edit never rewrites the logged line. What was originally said stays
+    # said; the edit is a new fact appended to a sidecar, and the readers
+    # below fold the newest one over the original at render time. So his
+    # context shows what the room currently shows, while the archive keeps
+    # every version — which is the whole reason this household keeps logs.
+
+    @staticmethod
+    def _edits_path(log_path: Path) -> Path:
+        """Sidecar for one topic log's edits.
+
+        Deliberately NOT '<topic>.edits.jsonl': six globs across the harness
+        enumerate 'channels/**/*.jsonl' as topic logs, and a sidecar caught
+        by them would be read back as a second stream of phantom messages.
+        The distiller's '<topic>.hits.json' dodges them the same way. The
+        contents are append-only newline-delimited JSON regardless of the
+        extension."""
+        return log_path.with_name(log_path.stem + ".edits.log")
+
+    def _channel_log_path(self, stream: str, topic: str) -> Path:
+        safe_topic = safe_filename(topic) if topic else "_notopic"
+        return (self.root / f"channels/{safe_filename(stream)}"
+                            f"/{safe_topic}.jsonl")
+
+    def log_message_edit(self, stream: str, topic: str, msg_id: int,
+                         content: str, editor, timestamp: str):
+        """Append an edit record beside a topic log."""
+        path = self._edits_path(self._channel_log_path(stream, topic))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"ts": timestamp, "msg_id": msg_id, "content": content,
+                  "editor": editor}
+        with open(path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def log_message_move(self, stream: str, topic: str, msg_id: int,
+                         new_stream: str, new_topic: str, editor,
+                         timestamp: str):
+        """Append a move record. Carries no 'content', so load_edits ignores
+        it — a move is written down, not rendered as an edit."""
+        path = self._edits_path(self._channel_log_path(stream, topic))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"ts": timestamp, "msg_id": msg_id, "editor": editor,
+                  "moved_to_stream": new_stream or stream,
+                  "moved_to_topic": new_topic}
+        with open(path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def load_edits(self, log_path: Path) -> dict[int, str]:
+        """msg_id -> current text, for one topic log. Later records win, so
+        a message edited three times renders its third version."""
+        path = self._edits_path(log_path)
+        if not path.exists():
+            return {}
+        edits: dict[int, str] = {}
+        try:
+            raw = path.read_text()
+        except OSError:
+            return {}
+        for line in raw.strip().split("\n"):
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            mid = rec.get("msg_id")
+            if mid is not None and "content" in rec:
+                edits[mid] = rec["content"]
+        return edits
+
     # ------------------------------------------------------------------
     # Context retrieval
     # ------------------------------------------------------------------
@@ -201,7 +284,11 @@ class StateManager:
         if not stream_dir.exists():
             return ""
         all_messages = []
+        edits: dict[int, str] = {}
         for log_file in stream_dir.glob("*.jsonl"):
+            # Zulip ids are globally unique, so one merged map serves every
+            # topic in the stream.
+            edits.update(self.load_edits(log_file))
             for line in log_file.read_text().strip().split("\n"):
                 if line:
                     try:
@@ -214,9 +301,10 @@ class StateManager:
             selected = []
             tokens_used = 0
             for m in reversed(all_messages):
-                content = self._strip_zulip_quotes(m.get('content', ''))
+                edited, edit_mark = _apply_edit(m, edits)
+                content = self._strip_zulip_quotes(edited)
                 text = (f"[{m['ts']}] #{m.get('topic', '?')} | "
-                        f"{m['sender']}: {content}")
+                        f"{m['sender']}: {content}{edit_mark}")
                 msg_id = m.get("msg_id")
                 text += _reaction_suffix(msg_id, reactions)
                 line_tokens = len(text) // 4 + 1
@@ -230,8 +318,10 @@ class StateManager:
         recent = all_messages[-n:]
         formatted = []
         for m in recent:
+            edited, edit_mark = _apply_edit(m, edits)
             text = (f"[{m['ts']}] #{m.get('topic', '?')} | "
-                    f"{m['sender']}: {self._strip_zulip_quotes(m['content'])}")
+                    f"{m['sender']}: {self._strip_zulip_quotes(edited)}"
+                    f"{edit_mark}")
             msg_id = m.get("msg_id")
             text += _reaction_suffix(msg_id, reactions)
             formatted.append(text)
@@ -251,6 +341,7 @@ class StateManager:
         if not path.exists():
             return ""
         exclude_ids = exclude_ids or set()
+        edits = self.load_edits(path)
         lines = []
         for line in path.read_text().strip().split("\n"):
             try:
@@ -263,9 +354,11 @@ class StateManager:
             sender = m.get("sender", "?")
             if exclude_sender and exclude_sender in sender.lower():
                 continue
-            content = self._strip_zulip_quotes(m.get("content", ""))
+            edited, edit_mark = _apply_edit(m, edits)
+            content = self._strip_zulip_quotes(edited)
             lines.append(
-                f"[{fmt_log_time(m.get('ts', ''))}] {sender}: {content}")
+                f"[{fmt_log_time(m.get('ts', ''))}] {sender}: "
+                f"{content}{edit_mark}")
         text = "\n".join(lines)
         if len(text) > max_chars:
             text = "[…earlier interim messages elided…]\n" + text[-max_chars:]
@@ -312,6 +405,7 @@ class StateManager:
                     max_tokens: int = 0) -> str:
         """Format log lines, optionally capped by token budget."""
         lines = path.read_text().strip().split("\n")
+        edits = self.load_edits(path)
 
         if max_tokens > 0:
             selected = []
@@ -321,9 +415,10 @@ class StateManager:
                     msg = json.loads(line)
                 except (json.JSONDecodeError, KeyError):
                     continue
-                content = self._strip_zulip_quotes(msg.get('content', ''))
+                edited, edit_mark = _apply_edit(msg, edits)
+                content = self._strip_zulip_quotes(edited)
                 text = (f"[{fmt_log_time(msg['ts'])}] "
-                        f"{msg['sender']}: {content}")
+                        f"{msg['sender']}: {content}{edit_mark}")
                 msg_id = msg.get("msg_id")
                 text += _reaction_suffix(msg_id, reactions)
                 line_tokens = len(text) // 4 + 1
@@ -339,9 +434,10 @@ class StateManager:
         for line in recent:
             try:
                 msg = json.loads(line)
-                content = self._strip_zulip_quotes(msg.get('content', ''))
+                edited, edit_mark = _apply_edit(msg, edits)
+                content = self._strip_zulip_quotes(edited)
                 text = (f"[{fmt_log_time(msg['ts'])}] "
-                        f"{msg['sender']}: {content}")
+                        f"{msg['sender']}: {content}{edit_mark}")
                 msg_id = msg.get("msg_id")
                 text += _reaction_suffix(msg_id, reactions)
                 formatted.append(text)

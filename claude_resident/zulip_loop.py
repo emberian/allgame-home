@@ -331,7 +331,7 @@ def run(resident):
     start_solitude(resident)
 
     result = resident.zulip.register(
-        event_types=["message", "reaction", "typing"],
+        event_types=["message", "reaction", "typing", "update_message"],
         narrow=[],
     )
 
@@ -358,6 +358,10 @@ def run(resident):
             resident._handle_reaction_event(event)
         elif etype == "typing":
             resident._handle_typing_event(event)
+        elif etype == "update_message":
+            # `pending` is handed over so an edit to a message still waiting
+            # its turn rewrites it before he ever reads it.
+            resident._handle_update_message_event(event, pending)
 
     def _fetch_events(block: bool):
         nonlocal queue_id, last_event_id
@@ -370,7 +374,8 @@ def run(resident):
             if events.get("code") == "BAD_EVENT_QUEUE_ID":
                 logger.warning("Event queue expired, re-registering...")
                 reg = resident.zulip.register(
-                    event_types=["message", "reaction", "typing"],
+                    event_types=["message", "reaction", "typing",
+                                 "update_message"],
                     narrow=[],
                 )
                 if reg.get("result") != "success":

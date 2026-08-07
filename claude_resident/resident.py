@@ -5,6 +5,7 @@ import json
 import time
 import logging
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import anthropic
@@ -22,6 +23,7 @@ from claude_resident.sessions import SessionManager
 from claude_resident.judge import EngagementJudge
 from claude_resident.handled import HandledSet
 from claude_resident.reactions import emoji_display, handle_reaction_event
+from claude_resident.edits import handle_update_message_event
 from claude_resident.prompt import (
     SYSTEM_PROMPT,
     allgame_context_files,
@@ -77,6 +79,10 @@ class ClaudeResident:
         self._typing_active: dict[tuple[str, str], float] = {}
         # Stream ID → stream name mapping (populated from events)
         self._stream_id_map: dict[int, str] = {}
+        # Message batches that have been claimed for a turn but whose text
+        # hasn't been read into a prompt yet. An edit arriving in that window
+        # still gets to change what he answers — see _batch_inflight.
+        self._inflight_batches: list[list[dict]] = []
 
     # ------------------------------------------------------------------
     # Memory management
@@ -183,32 +189,39 @@ class ClaudeResident:
         trigger = batch[trigger_idx]
         sender = trigger.get("sender_full_name", "unknown")
 
-        # --- Minimum pause before any visible action (typing indicator etc).
-        # Gives the human a beat to see their own message land. ---
-        time.sleep(COOLDOWN_SECONDS)
+        # Everything from here to the prompt build can take ~40s (cooldown +
+        # typing hold-off + burst sweeps), and people fix their typos inside
+        # that window. Publishing the batch lets an update_message event
+        # rewrite these dicts in place before their text is ever read.
+        with self._batch_inflight(batch):
+            # --- Minimum pause before any visible action (typing indicator
+            # etc). Gives the human a beat to see their own message land. ---
+            time.sleep(COOLDOWN_SECONDS)
 
-        # The judge has committed us to replying, so start the indicator HERE
-        # rather than just before the API call. Everything below — the typing
-        # hold-off, the burst sweep, session lookup, state fingerprinting and
-        # the whole prompt build — used to happen in silence, so the room saw
-        # nothing for seconds and then a sudden reply.
-        typing_stop = self._start_typing(stream, topic)
+            # The judge has committed us to replying, so start the indicator
+            # HERE rather than just before the API call. Everything below —
+            # the typing hold-off, the burst sweep, session lookup, state
+            # fingerprinting and the whole prompt build — used to happen in
+            # silence, so the room saw nothing for seconds and then a sudden
+            # reply.
+            typing_stop = self._start_typing(stream, topic)
 
-        # --- Typing hold-off: wait if someone is actively typing ---
-        self._wait_for_typing(stream, topic)
+            # --- Typing hold-off: wait if someone is actively typing ---
+            self._wait_for_typing(stream, topic)
 
-        # --- Burst sweep: gather messages that arrived while we waited (or
-        # while the previous response was generating). Finding new ones means
-        # the burst may still be live — pause a beat and sweep again. ---
-        if sweep is not None:
-            for _ in range(BURST_SWEEP_ROUNDS):
-                new = [m for m in (sweep() or []) if _prepare(m)]
-                if not new:
-                    break
-                batch.extend(new)
-                self.logger.info(
-                    f"Swept {len(new)} stacked message(s) into the turn")
-                time.sleep(BURST_SWEEP_INTERVAL)
+            # --- Burst sweep: gather messages that arrived while we waited
+            # (or while the previous response was generating). Finding new
+            # ones means the burst may still be live — pause a beat and
+            # sweep again. ---
+            if sweep is not None:
+                for _ in range(BURST_SWEEP_ROUNDS):
+                    new = [m for m in (sweep() or []) if _prepare(m)]
+                    if not new:
+                        break
+                    batch.extend(new)
+                    self.logger.info(
+                        f"Swept {len(new)} stacked message(s) into the turn")
+                    time.sleep(BURST_SWEEP_INTERVAL)
 
         self.logger.info(
             f"Responding to {sender} in #{stream}>{topic}"
@@ -480,6 +493,25 @@ class ClaudeResident:
     def _handle_reaction_event(self, event: dict):
         handle_reaction_event(
             event, self.reactions, self._msg_index, self._pending_reactions)
+
+    # ------------------------------------------------------------------
+    # Message edits
+    # ------------------------------------------------------------------
+
+    @contextmanager
+    def _batch_inflight(self, batch: list):
+        """Publish a claimed-but-unanswered batch so edits can reach it."""
+        self._inflight_batches.append(batch)
+        try:
+            yield
+        finally:
+            self._inflight_batches.remove(batch)
+
+    def _handle_update_message_event(self, event: dict, pending=()):
+        handle_update_message_event(
+            event, self.state, self._msg_index,
+            [pending, *self._inflight_batches], self._stream_id_map,
+            zulip=self.zulip)
 
     # ------------------------------------------------------------------
     # Typing indicator
