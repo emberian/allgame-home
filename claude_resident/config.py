@@ -58,7 +58,12 @@ SANDBOX_IMAGE = "claude-sandbox"
 SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
 BG_CONTAINER_NAME = "claude-bg"
-BG_CONTAINER_MEMORY = "8g"
+BG_CONTAINER_MEMORY = "4g"  # MUST stay well under the Docker VM's own RAM. At
+                            # "8g" against an 8092 MiB VM this container was
+                            # licensed to eat the entire machine, so a hungry
+                            # run_background took down the whole engine instead
+                            # of being OOM-killed as one container — that is the
+                            # mechanism behind the recurring "docker is broken".
 SESSION_TTL = 3600  # seconds — kept in lockstep with CACHE_TTL (1h). A session
                     # must not outlive its prompt cache: if it did, the first
                     # message after the cache expired would re-write the whole
