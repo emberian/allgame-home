@@ -134,12 +134,18 @@ def build_anthropic_client(http_client=None):
     consumers (judge, session summaries).
     """
     token = read_oauth_token()
+    # TOKEMAN_ACCOUNT is only the starting PREFERENCE; read_oauth_token
+    # resolves the account actually in use and records it in _ACTIVE.
+    # Reporting the constant meant the boot line read "boto@ember.software"
+    # on the very boot that had just rotated away from it — a log that lies
+    # about which account is live costs an hour the next time this breaks.
+    account = _ACTIVE["account"] or TOKEMAN_ACCOUNT
     if not token:
         raise RuntimeError(
-            f"No OAuth token for {TOKEMAN_ACCOUNT} in "
+            f"No OAuth token for {account} in "
             f"{TOKEMAN_TOKENS_PATH} — the resident cannot start without it.")
     betas = ",".join([OAUTH_BETA, *ANTHROPIC_BETAS])
-    logger.info(f"API client: direct Anthropic (OAuth, {TOKEMAN_ACCOUNT})")
+    logger.info(f"API client: direct Anthropic (OAuth, {account})")
     return anthropic.Anthropic(
         auth_token=token,
         http_client=http_client,
