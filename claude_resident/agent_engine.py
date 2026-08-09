@@ -71,7 +71,9 @@ _LIMIT_MARKERS = ("weekly limit", "usage limit", "rate limit",
                   "hit your limit", "resets ", "quota")
 
 
-def _is_limit_error(exc: Exception) -> bool:
+def _is_limit_error(exc) -> bool:
+    """True for a plan-limit rejection. Takes an exception OR the raw result
+    text — a limit arrives both ways and both need to trigger rotation."""
     msg = str(exc).lower()
     return any(m in msg for m in _LIMIT_MARKERS)
 
@@ -579,6 +581,7 @@ class AgentEngine:
                         stream: str, topic: str, sender: str):
         collected_text: list[str] = []
         assistant_record: list[dict] = []
+        limit_failure: str | None = None
         turn = 0
         async for msg in query(prompt=prompt_text, options=options):
             if isinstance(msg, AssistantMessage):
@@ -630,6 +633,23 @@ class AgentEngine:
                 if msg.is_error:
                     logger.error(f"Agent SDK result error: {msg.result!r} "
                                  f"{msg.errors!r}")
+                    # A plan-limit rejection arrives HERE, as a result
+                    # payload — not as an exception. By the time the SDK
+                    # raises, its own passthrough has degraded the text to
+                    # "success", so the rotate-and-retry path upstream never
+                    # matched a limit and never rotated. He sat rejected on a
+                    # 100%-weekly account for seven hours on 2026-08-08 with
+                    # two healthy accounts idle in tokeman. Carry the real
+                    # text out so the retry can see what happened.
+                    if _is_limit_error(msg.result):
+                        limit_failure = str(msg.result)
+        if limit_failure:
+            # AFTER the loop, never inside it: raising from within
+            # `async for ... query(...)` escapes while the SDK's generator is
+            # still running, and its cleanup then dies with "aclose():
+            # asynchronous generator is already running" — the trap sdk_call
+            # already hit (5e02c1c).
+            raise RuntimeError(limit_failure)
         return "\n".join(collected_text), assistant_record
 
     # ------------------------------------------------------------------
