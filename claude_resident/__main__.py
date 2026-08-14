@@ -15,7 +15,7 @@ from claude_resident.state import StateManager
 from claude_resident.judge import EngagementJudge
 from claude_resident.resident import ClaudeResident
 from claude_resident import zulip_loop
-from claude_resident.supervisor import run_supervised
+from claude_resident.supervisor import run_supervised, exit_if_orphaned
 
 
 def main():
@@ -48,6 +48,9 @@ def main():
 
     # One-shot modes: run directly, no supervisor needed
     if args._supervised or args.metacog:
+        if args._supervised:
+            # Don't outlive the supervisor — see exit_if_orphaned.
+            exit_if_orphaned()
         _run_directly(args)
         return
 

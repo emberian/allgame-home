@@ -1,8 +1,10 @@
 """Supervisor process — crash loop detection and rollback."""
 
+import os
 import sys
 import time
 import logging
+import threading
 import subprocess
 
 from claude_resident.config import HARNESS_DIR
@@ -16,6 +18,38 @@ logger = logging.getLogger("supervisor")
 
 CRASH_WINDOW = 60
 MAX_CRASHES = 3
+ORPHAN_CHECK_SECONDS = 10
+
+
+def exit_if_orphaned(interval: float = ORPHAN_CHECK_SECONDS):
+    """Make the supervised child die with its supervisor.
+
+    Stopping the resident means killing the launcher, and the event-loop
+    child would survive it — reparented to init, still holding a live Zulip
+    event queue, still answering. On 2026-08-14 three of them were running
+    at once in the same rooms, from restarts on three different days,
+    talking over each other in #clankerville>tavern. Nothing upstream
+    noticed, because every one of them was individually healthy: the only
+    symptom was the room getting several replies to one message.
+
+    A child that finds itself orphaned has no supervisor to restart it and
+    no business speaking, so it leaves. os._exit because a duplicate voice
+    in the room is worse than an orphaned sandbox container (the next boot
+    recreates that anyway).
+    """
+    original = os.getppid()
+
+    def _watch():
+        while True:
+            time.sleep(interval)
+            now = os.getppid()
+            if now != original or now == 1:
+                logger.error(
+                    "Supervisor gone (ppid %s -> %s) — exiting rather than "
+                    "answer the room twice", original, now)
+                os._exit(3)
+
+    threading.Thread(target=_watch, daemon=True, name="orphan-watch").start()
 
 
 def run_supervised(child_cmd: list[str], state_dir):
