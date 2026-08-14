@@ -69,6 +69,11 @@ VISIBLE_TOOLS = {"send_message", "send_dm", "add_reaction"}
 # Rejections that mean "this account is out", not "this turn failed".
 _LIMIT_MARKERS = ("weekly limit", "usage limit", "rate limit",
                   "hit your limit", "resets ", "quota")
+# How many spent accounts to walk past before giving up on a turn. Each
+# rotation costs a cold prefill, so this is not free — but with the
+# drain-emptiest-first policy the next account is routinely near its limit
+# too, and stopping after one retry left him silent with usable subs idle.
+MAX_LIMIT_ROTATIONS = 4
 
 
 def _is_limit_error(exc) -> bool:
@@ -179,6 +184,10 @@ class AgentEngine:
         self._turn_sends: list[str] = []  # contents posted this turn
         self._turn_visible = False  # any visible action this turn?
         self._last_context_tokens = 0  # session size, for sleep
+        # Set when a turn's ResultMessage reports a plan-limit rejection.
+        # Survives the turn's event loop so the rotate-and-retry can read it
+        # after the SDK's own (uninformative) exception surfaces.
+        self._limit_reason: str | None = None
         # ONE turn at a time. _ctx / _turn_sends / _turn_visible are per-turn
         # state living on the instance, and since the solitude thread landed
         # (2026-07-30) two threads can call respond() at once: a finishing
@@ -430,27 +439,53 @@ class AgentEngine:
 
         try:
             try:
+                self._limit_reason = None
                 internal_text, assistant_record = asyncio.run(
                     self._run_turn(prompt_text, options, session,
                                    stream, topic, sender))
-            except RuntimeError as e:
+            except Exception as e:
                 # Plan limits are per ACCOUNT, and tokeman holds several.
                 # A weekly/session rejection means this account is spent,
-                # not that he has nothing to say — rotate and retry once.
-                if not _is_limit_error(e):
-                    raise
-                nxt = rotate_account()
-                if not nxt:
+                # not that he has nothing to say — rotate and retry.
+                #
+                # Retry across SEVERAL accounts, not one: since auth._health
+                # drains the emptiest account first (cff9cdb), the account
+                # after a spent one is usually also near its limit, and a
+                # single retry lands on another rejection. Walk down the
+                # drain order until one serves or we run out.
+                # The engine-recorded reason is authoritative; str(e) is the
+                # SDK's degraded text and usually says nothing about limits.
+                if not (self._limit_reason or _is_limit_error(e)):
                     raise
                 logger.warning(
-                    f"Limit hit mid-turn; retrying #{stream}>{topic} on "
-                    f"{nxt}")
-                options.env["CLAUDE_CODE_OAUTH_TOKEN"] = \
-                    read_oauth_token() or ""
-                # The new account has a cold cache — this turn re-prefills.
-                internal_text, assistant_record = asyncio.run(
-                    self._run_turn(prompt_text, options, session,
-                                   stream, topic, sender))
+                    f"Limit rejection: {self._limit_reason or e}")
+                for attempt in range(MAX_LIMIT_ROTATIONS):
+                    nxt = rotate_account()
+                    if not nxt:
+                        raise
+                    logger.warning(
+                        f"Limit hit mid-turn; retrying #{stream}>{topic} on "
+                        f"{nxt} (attempt {attempt + 1}/"
+                        f"{MAX_LIMIT_ROTATIONS})")
+                    options.env["CLAUDE_CODE_OAUTH_TOKEN"] = \
+                        read_oauth_token() or ""
+                    try:
+                        self._limit_reason = None
+                        # New account, cold cache — this turn re-prefills.
+                        internal_text, assistant_record = asyncio.run(
+                            self._run_turn(prompt_text, options, session,
+                                           stream, topic, sender))
+                        break
+                    except Exception as e2:
+                        if not (self._limit_reason or _is_limit_error(e2)):
+                            raise
+                        e = e2
+                else:
+                    logger.error(
+                        f"Every account tried is at its limit "
+                        f"({MAX_LIMIT_ROTATIONS} rotations) — giving up on "
+                        f"#{stream}>{topic}")
+                    raise
             # Mute-turn net: a turn that produced text but called no visible
             # tool means the reply went nowhere — text output is invisible
             # in this harness. Prompt wording alone can't guarantee this in
@@ -577,13 +612,33 @@ class AgentEngine:
             READING_SESSIONS_FILE, json.dumps(bindings, indent=1) + "\n")
         logger.info(f"Bound reading session updated for {key}")
 
+    @staticmethod
+    async def _query_surfacing_limits(prompt_text: str, options):
+        """Thin pass-through over query().
+
+        Kept as a seam: two previous attempts to detect plan limits *inside*
+        this iteration both failed, and the reason is worth recording. A
+        limit arrives as a ResultMessage payload, and the CLI then exits
+        non-zero on purpose — but the exception that carries that exit does
+        NOT necessarily surface through this generator. It can pop out at
+        asyncio.run() teardown instead, by which point any local variable
+        holding the real reason is gone, and what the caller sees is the
+        SDK's degraded "Claude Code returned an error result: success" —
+        no limit marker, and not even a RuntimeError.
+
+        So the reason is recorded on the ENGINE (`_limit_reason`) the moment
+        the ResultMessage goes past, and read back by the caller after the
+        exception lands, wherever it lands.
+        """
+        async for msg in query(prompt=prompt_text, options=options):
+            yield msg
+
     async def _run_turn(self, prompt_text: str, options, session,
                         stream: str, topic: str, sender: str):
         collected_text: list[str] = []
         assistant_record: list[dict] = []
-        limit_failure: str | None = None
         turn = 0
-        async for msg in query(prompt=prompt_text, options=options):
+        async for msg in self._query_surfacing_limits(prompt_text, options):
             if isinstance(msg, AssistantMessage):
                 blocks = []
                 for block in msg.content:
@@ -633,23 +688,12 @@ class AgentEngine:
                 if msg.is_error:
                     logger.error(f"Agent SDK result error: {msg.result!r} "
                                  f"{msg.errors!r}")
-                    # A plan-limit rejection arrives HERE, as a result
-                    # payload — not as an exception. By the time the SDK
-                    # raises, its own passthrough has degraded the text to
-                    # "success", so the rotate-and-retry path upstream never
-                    # matched a limit and never rotated. He sat rejected on a
-                    # 100%-weekly account for seven hours on 2026-08-08 with
-                    # two healthy accounts idle in tokeman. Carry the real
-                    # text out so the retry can see what happened.
+                    # Record on the engine, not in a local: the exception
+                    # that follows may surface at asyncio.run() teardown
+                    # rather than through the generator, and a local would
+                    # already be gone. See _query_surfacing_limits.
                     if _is_limit_error(msg.result):
-                        limit_failure = str(msg.result)
-        if limit_failure:
-            # AFTER the loop, never inside it: raising from within
-            # `async for ... query(...)` escapes while the SDK's generator is
-            # still running, and its cleanup then dies with "aclose():
-            # asynchronous generator is already running" — the trap sdk_call
-            # already hit (5e02c1c).
-            raise RuntimeError(limit_failure)
+                        self._limit_reason = str(msg.result)
         return "\n".join(collected_text), assistant_record
 
     # ------------------------------------------------------------------
