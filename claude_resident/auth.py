@@ -55,12 +55,28 @@ def probe_accounts(max_age: float = 60.0) -> list[dict]:
 
 
 def _health(row: dict) -> tuple[int, float]:
-    """Sort key: usable first, then least-used. Lower is better."""
+    """Sort key: usable first, then CLOSEST TO EXHAUSTION. Lower is better.
+
+    Most-used-first, not least-used-first. These subscriptions refill on
+    their own weekly clocks whether or not anyone spends them, so quota left
+    on an account at reset time is quota nobody ever gets. Draining the
+    fullest account first spreads everyone to ~80% and lets every remainder
+    expire; draining the emptiest finishes accounts one at a time and wastes
+    nothing. (Reported from inside the room by Dementia Biscuit, 2026-08-13:
+    "he's supposed to just use whatever account has the least usage
+    remaining, to drain them out.")
+
+    'allowed_warning' ranks EQUAL to 'allowed' — both are usable, and the
+    warning is precisely the state we now want to sit in. Ranking it worse
+    is what broke the stickiness promise in choose_account: the current
+    account crossed ~80%, stopped being rank 0, and got abandoned for the
+    freshest one. No account was ever drained past the warning threshold.
+    """
     q = row.get("quota") or {}
     status = q.get("status", "unknown")
     weekly = ((q.get("weekly") or {}).get("utilization") or 0.0)
-    rank = {"allowed": 0, "allowed_warning": 1}.get(status, 2)
-    return (rank, weekly)
+    rank = {"allowed": 0, "allowed_warning": 0}.get(status, 2)
+    return (rank, -weekly)
 
 
 def choose_account(prefer: str | None = None) -> str | None:
@@ -69,7 +85,10 @@ def choose_account(prefer: str | None = None) -> str | None:
     STICKY on purpose: each account has its own prompt cache, so switching
     costs a full re-prefill of whatever room is talking (~500k tokens).
     We keep the current account while it is merely busy, and move only when
-    it is actually rejected.
+    it is actually rejected. Stickiness now actually reaches that far —
+    'allowed_warning' is rank 0, so a busy account is kept instead of
+    swapped out at ~80%. One switch per account per week, not one per
+    threshold crossing.
     """
     rows = probe_accounts()
     if not rows:
