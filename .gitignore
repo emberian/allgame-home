@@ -3,3 +3,12 @@
 __pycache__/
 .zuliprc-*
 deblog.txt
+
+# Sibling residents' credentials. The existing .zuliprc / .zuliprc-* rules
+# did not match yue-zuliprc, and it reached a local commit on 2026-08-24
+# (caught before any push). Match the shape, not one spelling.
+*-zuliprc
+*zuliprc*
+
+# Foreverlogs live on disk, not in git — resident.log alone is 13MB/200k lines.
+*.log
