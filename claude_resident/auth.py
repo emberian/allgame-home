@@ -57,14 +57,21 @@ def probe_accounts(max_age: float = 60.0) -> list[dict]:
 def _health(row: dict) -> tuple[int, float]:
     """Sort key: usable first, then CLOSEST TO EXHAUSTION. Lower is better.
 
-    Most-used-first, not least-used-first. These subscriptions refill on
+    SOONEST-RESET first, then most-used. These subscriptions refill on
     their own weekly clocks whether or not anyone spends them, so quota left
-    on an account at reset time is quota nobody ever gets. Draining the
-    fullest account first spreads everyone to ~80% and lets every remainder
-    expire; draining the emptiest finishes accounts one at a time and wastes
-    nothing. (Reported from inside the room by Dementia Biscuit, 2026-08-13:
-    "he's supposed to just use whatever account has the least usage
-    remaining, to drain them out.")
+    on an account at its reset is quota nobody ever gets. The goal is
+    Dementia Biscuit's, reported from inside the room 2026-08-13: "use
+    whatever account has the least usage remaining, to drain them out —
+    he's using tokens that otherwise wouldn't be used."
+
+    Ordering by reset supersedes plain most-used-first (cff9cdb). Those
+    agreed while every account was near its cap, and diverged the moment
+    they were not: on 2026-08-24 he had sat on cmrx64 for ten days at 74%
+    because it was the most-used usable account, while otto's remaining 49%
+    was 43 hours from resetting unspent and three accounts sat at 0%.
+    Draining "emptiest first" only reclaims quota if an account actually
+    gets emptied; when none do, the thing that decides whether quota is
+    used or lost is the CLOCK. Spend what expires soonest.
 
     'allowed_warning' ranks EQUAL to 'allowed' — both are usable, and the
     warning is precisely the state we now want to sit in. Ranking it worse
@@ -74,30 +81,34 @@ def _health(row: dict) -> tuple[int, float]:
     """
     q = row.get("quota") or {}
     status = q.get("status", "unknown")
-    weekly = ((q.get("weekly") or {}).get("utilization") or 0.0)
+    wk = q.get("weekly") or {}
+    weekly = wk.get("utilization") or 0.0
+    reset = wk.get("reset") or float("inf")
     rank = {"allowed": 0, "allowed_warning": 0}.get(status, 2)
-    return (rank, -weekly)
+    return (rank, reset, -weekly)
 
 
 def choose_account(prefer: str | None = None) -> str | None:
     """Pick an account to run on.
 
-    STICKY on purpose: each account has its own prompt cache, so switching
-    costs a full re-prefill of whatever room is talking (~500k tokens).
-    We keep the current account while it is merely busy, and move only when
-    it is actually rejected. Stickiness now actually reaches that far —
-    'allowed_warning' is rank 0, so a busy account is kept instead of
-    swapped out at ~80%. One switch per account per week, not one per
-    threshold crossing.
+    Sticky, but only to the RIGHT account. Each account has its own prompt
+    cache, so switching costs a full re-prefill (~500k tokens) — but the
+    old rule ("keep the current one while it is merely usable") welded him
+    to a single account for ten days, because the only thing that could
+    dislodge him was a rejection that never came. Reset timestamps are
+    fixed for the week, so ordering by them is stable: he stays put until an
+    account actually resets, then moves once. Roughly one switch per reset,
+    not one per turn and not one per fortnight.
     """
     rows = probe_accounts()
     if not rows:
         return prefer or TOKEMAN_ACCOUNT
     by_name = {r.get("token_name"): r for r in rows}
     cur = prefer or _ACTIVE["account"] or TOKEMAN_ACCOUNT
-    if cur in by_name and _health(by_name[cur])[0] == 0:
-        return cur  # still healthy — don't thrash the cache
-    healthy = sorted((r for r in rows if _health(r)[0] < 2), key=_health)
+    healthy_now = sorted((r for r in rows if _health(r)[0] < 2), key=_health)
+    if healthy_now and healthy_now[0].get("token_name") == cur:
+        return cur  # already on the perishable one — don't thrash the cache
+    healthy = healthy_now
     if not healthy:
         logger.error("tokeman: every account is rejected")
         return cur
