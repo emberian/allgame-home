@@ -36,6 +36,13 @@ def _reaction_suffix(msg_id, reactions) -> str:
     return f" [{rxn_str}]" if rxn_str else ""
 
 
+
+CONTEXT_FLOORS_FILE = "context_floors.json"
+
+
+def _floor_key(stream: str, topic: str) -> str:
+    return f"{stream}|{topic}"
+
 def _apply_edit(msg: dict, edits: dict[int, str]) -> tuple[str, str]:
     """Fold the newest edit over a logged message.
 
@@ -234,6 +241,40 @@ class StateManager:
         with open(path, "a") as f:
             f.write(json.dumps(record) + "\n")
 
+    def context_floor(self, stream: str, topic: str) -> int:
+        """Highest msg_id to EXCLUDE from loaded context for this room.
+
+        A provider policy refusal is triggered by the conversation, not by
+        the message being answered, so it does not clear when the offending
+        message is redacted — the room's replies, and its `quote` blocks,
+        carry it. Redacting those in turn means deleting the community's
+        own discussion, which is not ours to delete.
+
+        A floor draws a line instead: everything at or below it stays on
+        disk and stops being LOADED. The room resumes above the line, which
+        is what "start a new session to continue" actually means when the
+        thing that must not continue is the transcript. Bound what is
+        loaded, never what is stored.
+        """
+        try:
+            raw = self.read_file(CONTEXT_FLOORS_FILE)
+            if not raw:
+                return 0
+            return int(json.loads(raw).get(_floor_key(stream, topic)) or 0)
+        except (ValueError, TypeError, AttributeError):
+            return 0
+
+    def set_context_floor(self, stream: str, topic: str, msg_id: int):
+        try:
+            data = json.loads(self.read_file(CONTEXT_FLOORS_FILE) or "{}")
+        except ValueError:
+            data = {}
+        data[_floor_key(stream, topic)] = int(msg_id)
+        self.write_file(CONTEXT_FLOORS_FILE, json.dumps(data, indent=1) + "\n")
+        logger.warning("Context floor for %s|%s set to %s — history at or "
+                       "below that id is no longer loaded", stream, topic,
+                       msg_id)
+
     def load_edits(self, log_path: Path) -> dict[int, str]:
         """msg_id -> current text, for one topic log. Later records win, so
         a message edited three times renders its third version."""
@@ -269,7 +310,9 @@ class StateManager:
         path = self.root / f"channels/{safe_stream}/{safe_topic}.jsonl"
         if not path.exists():
             return ""
-        return self._format_log(path, n, reactions=reactions, max_tokens=max_tokens)
+        return self._format_log(path, n, reactions=reactions,
+                                max_tokens=max_tokens,
+                                floor=self.context_floor(stream, topic))
 
     def get_recent_stream_context(self, stream: str, n: int = 100,
                                   reactions: dict[int, dict[str, int]] | None = None,
@@ -289,12 +332,20 @@ class StateManager:
             # Zulip ids are globally unique, so one merged map serves every
             # topic in the stream.
             edits.update(self.load_edits(log_file))
+            # A floor has to apply here too: this is the cross-stream tail
+            # injected into OTHER rooms' cold starts, which is how one
+            # poisoned topic took every room down on 2026-08-22.
+            floor = self.context_floor(stream, log_file.stem)
             for line in log_file.read_text().strip().split("\n"):
                 if line:
                     try:
-                        all_messages.append(json.loads(line))
+                        m = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    mid = m.get("msg_id")
+                    if floor and mid is not None and mid <= floor:
+                        continue
+                    all_messages.append(m)
         all_messages.sort(key=lambda m: m.get("ts", ""))
 
         if max_tokens > 0:
@@ -341,6 +392,7 @@ class StateManager:
         if not path.exists():
             return ""
         exclude_ids = exclude_ids or set()
+        floor = self.context_floor(stream, topic)
         edits = self.load_edits(path)
         lines = []
         for line in path.read_text().strip().split("\n"):
@@ -350,6 +402,8 @@ class StateManager:
                 continue
             mid = m.get("msg_id")
             if not mid or mid <= since_id or mid in exclude_ids:
+                continue
+            if floor and mid <= floor:
                 continue
             sender = m.get("sender", "?")
             if exclude_sender and exclude_sender in sender.lower():
@@ -402,9 +456,22 @@ class StateManager:
 
     def _format_log(self, path: Path, n: int = 500,
                     reactions: dict[int, dict[str, int]] | None = None,
-                    max_tokens: int = 0) -> str:
-        """Format log lines, optionally capped by token budget."""
+                    max_tokens: int = 0, floor: int = 0) -> str:
+        """Format log lines, optionally capped by token budget.
+
+        `floor` drops every message at or below that id — see
+        context_floor(). The lines stay in the file; they stop being read."""
         lines = path.read_text().strip().split("\n")
+        if floor:
+            kept = []
+            for ln in lines:
+                try:
+                    mid = json.loads(ln).get("msg_id")
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if mid is None or mid > floor:
+                    kept.append(ln)
+            lines = kept
         edits = self.load_edits(path)
 
         if max_tokens > 0:
