@@ -76,6 +76,21 @@ _LIMIT_MARKERS = ("weekly limit", "usage limit", "rate limit",
 MAX_LIMIT_ROTATIONS = 4
 
 
+_REFUSAL_MARKERS = ("can't help with this", "cannot help with this",
+                    "legal/aup")
+
+
+def _is_policy_refusal(text) -> bool:
+    """A provider-side policy refusal, as opposed to Claude declining.
+
+    Distinct from a limit: rotating accounts cannot fix it, because every
+    account sees the same context. What fixes it is retiring the bound
+    session carrying the offending history — the room is reborn from the
+    logs and keeps talking."""
+    t = str(text).lower()
+    return any(m in t for m in _REFUSAL_MARKERS)
+
+
 def _is_limit_error(exc) -> bool:
     """True for a plan-limit rejection. Takes an exception OR the raw result
     text — a limit arrives both ways and both need to trigger rotation."""
@@ -188,6 +203,8 @@ class AgentEngine:
         # Survives the turn's event loop so the rotate-and-retry can read it
         # after the SDK's own (uninformative) exception surfaces.
         self._limit_reason: str | None = None
+        # Set when the provider refuses the whole request on policy grounds.
+        self._refusal_reason: str | None = None
         # ONE turn at a time. _ctx / _turn_sends / _turn_visible are per-turn
         # state living on the instance, and since the solitude thread landed
         # (2026-07-30) two threads can call respond() at once: a finishing
@@ -440,52 +457,91 @@ class AgentEngine:
         try:
             try:
                 self._limit_reason = None
+                self._refusal_reason = None
                 internal_text, assistant_record = asyncio.run(
                     self._run_turn(prompt_text, options, session,
                                    stream, topic, sender))
             except Exception as e:
-                # Plan limits are per ACCOUNT, and tokeman holds several.
-                # A weekly/session rejection means this account is spent,
-                # not that he has nothing to say — rotate and retry.
-                #
-                # Retry across SEVERAL accounts, not one: since auth._health
-                # drains the emptiest account first (cff9cdb), the account
-                # after a spent one is usually also near its limit, and a
-                # single retry lands on another rejection. Walk down the
-                # drain order until one serves or we run out.
-                # The engine-recorded reason is authoritative; str(e) is the
-                # SDK's degraded text and usually says nothing about limits.
-                if not (self._limit_reason or _is_limit_error(e)):
-                    raise
-                logger.warning(
-                    f"Limit rejection: {self._limit_reason or e}")
-                for attempt in range(MAX_LIMIT_ROTATIONS):
-                    nxt = rotate_account()
-                    if not nxt:
+                # Two different failures arrive here wearing the same
+                # useless text ("Claude Code returned an error result:
+                # success"), so both are recognised from what the engine
+                # recorded while the ResultMessage went past.
+                if self._refusal_reason:
+                    # POLICY refusal. Rotating cannot fix it — every account
+                    # sees the same context. What poisons the room is the
+                    # bound reading session: it carries its own transcript,
+                    # so it survives every redaction of the channel logs.
+                    # Retire it and retry cold; the birth payload restores
+                    # the conversation from the logs.
+                    #
+                    # Without this the room stays mute until a human clears
+                    # the binding by hand (three times in three days,
+                    # 2026-08-22..24), and the symptom misleads: rapid
+                    # chatter keeps a warm session alive and works, while
+                    # anything arriving after a pause takes a fresh session,
+                    # resumes the poisoned binding, and is refused. From
+                    # inside the room that reads as "he answers chatter but
+                    # not @s".
+                    reason = self._refusal_reason
+                    self._refusal_reason = None
+                    binding_key = f"{stream}|{topic}"
+                    bound = (self._load_bindings().get(binding_key) or {})
+                    if not bound.get("sdk_session_id"):
+                        logger.error(
+                            f"Policy refusal in #{stream}>{topic} with no "
+                            f"bound session to retire — the content is in "
+                            f"the cold-start context ({reason[:80]})")
                         raise
                     logger.warning(
-                        f"Limit hit mid-turn; retrying #{stream}>{topic} on "
-                        f"{nxt} (attempt {attempt + 1}/"
-                        f"{MAX_LIMIT_ROTATIONS})")
-                    options.env["CLAUDE_CODE_OAUTH_TOKEN"] = \
-                        read_oauth_token() or ""
-                    try:
-                        self._limit_reason = None
-                        # New account, cold cache — this turn re-prefills.
-                        internal_text, assistant_record = asyncio.run(
-                            self._run_turn(prompt_text, options, session,
-                                           stream, topic, sender))
-                        break
-                    except Exception as e2:
-                        if not (self._limit_reason or _is_limit_error(e2)):
+                        f"Policy refusal in #{stream}>{topic} — retiring "
+                        f"bound session for rebirth ({reason[:80]})")
+                    self._save_binding_fields(
+                        binding_key, sdk_session_id="", context_tokens=0)
+                    session.sdk_session_id = None
+                    internal_text, assistant_record = asyncio.run(
+                        self._run_turn(prompt_text, options, session,
+                                       stream, topic, sender))
+                elif self._limit_reason or _is_limit_error(e):
+                    # Plan limits are per ACCOUNT and tokeman holds several,
+                    # so a rejection means this account is spent, not that
+                    # he has nothing to say. Walk down the drain order:
+                    # since auth._health spends the soonest-expiring quota
+                    # first, the next account is routinely near its own
+                    # limit too, and stopping after one retry left him
+                    # silent with usable subscriptions idle.
+                    logger.warning(
+                        f"Limit rejection: {self._limit_reason or e}")
+                    for attempt in range(MAX_LIMIT_ROTATIONS):
+                        nxt = rotate_account()
+                        if not nxt:
                             raise
-                        e = e2
+                        logger.warning(
+                            f"Limit hit mid-turn; retrying "
+                            f"#{stream}>{topic} on {nxt} "
+                            f"(attempt {attempt + 1}/{MAX_LIMIT_ROTATIONS})")
+                        options.env["CLAUDE_CODE_OAUTH_TOKEN"] = \
+                            read_oauth_token() or ""
+                        try:
+                            self._limit_reason = None
+                            # New account, cold cache — this re-prefills.
+                            internal_text, assistant_record = asyncio.run(
+                                self._run_turn(prompt_text, options, session,
+                                               stream, topic, sender))
+                            break
+                        except Exception as e2:
+                            if not (self._limit_reason
+                                    or _is_limit_error(e2)):
+                                raise
+                            e = e2
+                    else:
+                        logger.error(
+                            f"Every account tried is at its limit "
+                            f"({MAX_LIMIT_ROTATIONS} rotations) — giving up "
+                            f"on #{stream}>{topic}")
+                        raise
                 else:
-                    logger.error(
-                        f"Every account tried is at its limit "
-                        f"({MAX_LIMIT_ROTATIONS} rotations) — giving up on "
-                        f"#{stream}>{topic}")
                     raise
+
             # Mute-turn net: a turn that produced text but called no visible
             # tool means the reply went nowhere — text output is invisible
             # in this harness. Prompt wording alone can't guarantee this in
@@ -694,6 +750,11 @@ class AgentEngine:
                     # already be gone. See _query_surfacing_limits.
                     if _is_limit_error(msg.result):
                         self._limit_reason = str(msg.result)
+                    elif _is_policy_refusal(msg.result):
+                        # Not our content — the CONTEXT. Recorded here for
+                        # the same reason as _limit_reason: the exception
+                        # that follows says only "error result: success".
+                        self._refusal_reason = str(msg.result)
         return "\n".join(collected_text), assistant_record
 
     # ------------------------------------------------------------------
