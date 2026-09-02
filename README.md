@@ -166,7 +166,7 @@ uv run python -m claude_resident --zuliprc .zuliprc
 | Comms | `send_message`, `add_reaction`, `send_sysadmin_message` |
 | Sandbox / bg | `run_sandbox`, `get_sandbox_file`, `upload_sandbox_file`, `run_background`, `query_background` |
 | Web / X | `fetch_url`, `web_search`, `read_tweet`, `search_tweets`, `get_user_tweets` |
-| Scry (remote MCP, `mcp__scry__*`) | whatever `tools/list` at mcp.scry.io returns — `sql`, `schema`, `search`, `fetch`, `brief`, `embed`, `rerank`, `datalog`, `attest`, `memory`, `batch`, `route`, … (30 on 2026-09-02) |
+| Scry (remote MCP, `mcp__scry__*`) | `schema`, `sql`, `embed` — three of the 30 at mcp.scry.io; the rest are denied client-side (see `scry.TOOLS`) |
 | Models | `lm_studio` (local server), `invoke_model` (recursive Bedrock call) |
 | Self / meta | `edit_harness`, `run_mirror_council` |
 

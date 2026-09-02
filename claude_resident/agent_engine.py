@@ -222,13 +222,19 @@ class AgentEngine:
         self._scry_servers = (
             {scry.SERVER_NAME: scry.sdk_server(scry_key)} if scry_key else {})
         self._scry_addendum = scry.PROMPT_GUIDANCE if scry_key else ""
+        # Claude Code has no per-server tool allowlist, only deny rules, so
+        # the trim to scry.TOOLS is "deny everything else in the live
+        # roster" — which the boot probe fetches (snapshot if it can't).
+        self._scry_disallowed = (
+            scry.sdk_disallowed(scry.log_probe("claude", scry_key))
+            if scry_key else [])
         AGENT_SDK_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         logger.info(
             f"Agent SDK engine ready: model={AGENT_SDK_MODEL}, "
             f"{len(TOOL_DEFINITIONS)} tools via in-process MCP"
-            + (", Scry attached" if scry_key else ", no Scry key"))
-        if scry_key:
-            scry.log_probe("claude", scry_key)
+            + (f", Scry attached ({', '.join(scry.TOOLS)}; "
+               f"{len(self._scry_disallowed)} denied)"
+               if scry_key else ", no Scry key"))
 
     # ------------------------------------------------------------------
     # Tool bridge
@@ -444,6 +450,7 @@ class AgentEngine:
             allowed_tools=[f"mcp__resident__{t['name']}"
                            for t in TOOL_DEFINITIONS]
                           + [f"mcp__{n}" for n in self._scry_servers],
+            disallowed_tools=self._scry_disallowed,  # the roster trim
             permission_mode="bypassPermissions",
             setting_sources=[],  # never load the host user's CLAUDE.md
             resume=session.sdk_session_id or None,
