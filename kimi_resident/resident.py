@@ -20,6 +20,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from kimi_resident import config
+from claude_resident import scry
 from kimi_resident.engine import KimiEngine
 
 load_dotenv()
@@ -88,6 +89,7 @@ room.
 You also have search_messages and search_zulip_history for the room's past,
 fetch_url and web_search for the outside world, and send_sysadmin_message
 to reach Ember privately when it matters.
+{scry}
 
 ## Personality
 
@@ -128,6 +130,12 @@ scratchpad and journal are YOUR memory — things you chose to write down.
 # Per-turn reminder, placed where she acts rather than deep in the system
 # prompt (same counterweight agent_engine uses).
 TURN_REMINDER = "\n\n[send_message to reply]"
+
+
+def _scry_section(engine) -> str:
+    """The Scry guidance, only when the engine actually attached it —
+    the prompt must not describe tools she does not have."""
+    return scry.PROMPT_GUIDANCE if getattr(engine, "scry_enabled", False) else ""
 
 def poisoned(text: str) -> bool:
     """True if a message carries provider-filter trigger terms. Such messages
@@ -439,7 +447,8 @@ def build_turn_prompt(state, engine, key, stream, topic, sender,
         return digest + _fresh_inbox(state, key) + message + TURN_REMINDER
 
     system = SYSTEM_PROMPT.format(model=model,
-                                  state_context=load_state_context(state))
+                                  state_context=load_state_context(state),
+                                  scry=_scry_section(engine))
     parts = [
         f"[System context]\n{system}\n[/System context]",
         CHAT_FRAMING,
@@ -550,7 +559,8 @@ def _solitude_loop(engine, state, streams, bot_name):
             else:
                 system = SYSTEM_PROMPT.format(
                     model=engine.model,
-                    state_context=load_state_context(state))
+                    state_context=load_state_context(state),
+                    scry=_scry_section(engine))
                 prompt = (f"[System context]\n{system}\n[/System context]\n\n"
                           + instruction)
             text, posted = engine.respond(

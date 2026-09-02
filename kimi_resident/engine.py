@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timezone
 
 from kimi_resident import config
+from claude_resident import scry
 
 logger = logging.getLogger("kimi_engine")
 
@@ -73,8 +74,11 @@ class KimiEngine:
         self._in_flight = False  # a turn is executing (chat or solitude)
         self._prepare_home()
         self._sessions: dict[str, str] = self._load_sessions()
-        logger.info("Kimi engine ready: model=%s, %d tools via stdio MCP",
-                    self.model, len(config.TOOL_SUBSET))
+        logger.info("Kimi engine ready: model=%s, %d tools via stdio MCP%s",
+                    self.model, len(config.TOOL_SUBSET),
+                    ", Scry attached" if self.scry_enabled else ", no Scry key")
+        if self.scry_enabled:
+            scry.log_probe("yue", scry.api_key())
 
     # ------------------------------------------------------------------
     # Resident kimi home
@@ -128,7 +132,17 @@ class KimiEngine:
             "startupTimeoutMs": 180_000,
             "toolTimeoutMs": 180_000,
         }}}
-        (home / "mcp.json").write_text(json.dumps(mcp, indent=1))
+        # Scry: the public internet as a database, a remote MCP server
+        # beside her own suite (see claude_resident/scry.py). kimi-code
+        # takes the bearer header literally — no env expansion — so the
+        # key lands in this file; it is hers alone, hence the 0600.
+        scry_key = scry.api_key()
+        self.scry_enabled = bool(scry_key)
+        if scry_key:
+            mcp["mcpServers"][scry.SERVER_NAME] = scry.kimi_server(scry_key)
+        mcp_path = home / "mcp.json"
+        mcp_path.write_text(json.dumps(mcp, indent=1))
+        mcp_path.chmod(0o600)
 
     # ------------------------------------------------------------------
     # Session map (topic -> kimi session id)

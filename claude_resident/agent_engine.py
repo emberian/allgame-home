@@ -43,6 +43,7 @@ from claude_agent_sdk import (
 )
 
 from claude_resident.auth import read_oauth_token, rotate_account
+from claude_resident import scry
 from claude_resident.config import (
     AGENT_SDK_MODEL,
     AGENT_SDK_FALLBACK_MODEL,
@@ -214,10 +215,20 @@ class AgentEngine:
         # simultaneously anyway.
         self._turn_lock = threading.Lock()
         self._server = self._build_server()
+        # Scry rides beside the resident server as a remote MCP endpoint —
+        # its tools/list is the contract, so nothing here enumerates them.
+        # No key, no server, and the prompt says nothing about it.
+        scry_key = scry.api_key()
+        self._scry_servers = (
+            {scry.SERVER_NAME: scry.sdk_server(scry_key)} if scry_key else {})
+        self._scry_addendum = scry.PROMPT_GUIDANCE if scry_key else ""
         AGENT_SDK_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         logger.info(
             f"Agent SDK engine ready: model={AGENT_SDK_MODEL}, "
-            f"{len(TOOL_DEFINITIONS)} tools via in-process MCP")
+            f"{len(TOOL_DEFINITIONS)} tools via in-process MCP"
+            + (", Scry attached" if scry_key else ", no Scry key"))
+        if scry_key:
+            scry.log_probe("claude", scry_key)
 
     # ------------------------------------------------------------------
     # Tool bridge
@@ -327,7 +338,7 @@ class AgentEngine:
             is_first_message=(cold and not birth_payload),
             reactions=self.resident.reactions)
         system_text = ("\n\n".join(b["text"] for b in system_blocks)
-                       + "\n" + ENGINE_ADDENDUM)
+                       + "\n" + ENGINE_ADDENDUM + self._scry_addendum)
 
         # The bound book's notes ride in context every episode — durable
         # memory that survives compaction of the long reading session.
@@ -426,10 +437,13 @@ class AgentEngine:
             # thinking omitted: the CLI defaults to adaptive on Opus, and
             # sdk 0.2.126's transport chokes on the dataclass form.
             max_turns=MAX_TOOL_TURNS,
-            mcp_servers={"resident": self._server},
+            mcp_servers={"resident": self._server, **self._scry_servers},
             tools=[],  # no Claude Code host tools — his jailed surface only
+            # mcp__<server> with no tool suffix is Claude Code's rule for
+            # every tool that server lists — the roster is Scry's to grow.
             allowed_tools=[f"mcp__resident__{t['name']}"
-                           for t in TOOL_DEFINITIONS],
+                           for t in TOOL_DEFINITIONS]
+                          + [f"mcp__{n}" for n in self._scry_servers],
             permission_mode="bypassPermissions",
             setting_sources=[],  # never load the host user's CLAUDE.md
             resume=session.sdk_session_id or None,
@@ -451,6 +465,9 @@ class AgentEngine:
                 # CLI fall through to the token; the key stays in os.environ
                 # for the tools that legitimately need it.
                 "ANTHROPIC_API_KEY": "",
+                # Make the CLI wait for the remote server before the first
+                # model call — see scry.SDK_ENV for why this is needed.
+                **(scry.SDK_ENV if self._scry_servers else {}),
             },
         )
 

@@ -96,6 +96,7 @@ claude_resident/
 ├── sandbox.py           # Docker sandbox + persistent background container
 ├── selfmod.py           # edit_harness (multi-file), git integration, rollback
 ├── metacog.py           # background metacognition
+├── scry.py              # Scry attachment: key, MCP server entries, prompt guidance, boot probe
 ├── resident.py          # ClaudeResident — orchestrator
 ├── zulip_loop.py        # event loop, backfill, restart replay, dispatch
 ├── supervisor.py        # crash loop detection, self-edit rollback
@@ -143,6 +144,9 @@ uv sync
 # (also gitignored — never commit them). API access is via AWS Bedrock
 # (aws_profile), with optional keys in .env:
 #   KAGI_API_KEY="..."   # optional, for web_search
+# Scry (https://scry.io — the public internet as SQL) attaches as a remote
+# MCP server when ~/.scry-key (or SCRY_API_KEY) holds a personal key; see
+# claude_resident/scry.py. No key, no Scry tools, no Scry prompt section.
 
 # Build the sandbox Docker image
 docker build -t claude-sandbox -f Dockerfile.sandbox .
@@ -162,6 +166,7 @@ uv run python -m claude_resident --zuliprc .zuliprc
 | Comms | `send_message`, `add_reaction`, `send_sysadmin_message` |
 | Sandbox / bg | `run_sandbox`, `get_sandbox_file`, `upload_sandbox_file`, `run_background`, `query_background` |
 | Web / X | `fetch_url`, `web_search`, `read_tweet`, `search_tweets`, `get_user_tweets` |
+| Scry (remote MCP, `mcp__scry__*`) | whatever `tools/list` at mcp.scry.io returns — `sql`, `schema`, `search`, `fetch`, `brief`, `embed`, `rerank`, `datalog`, `attest`, `memory`, `batch`, `route`, … (30 on 2026-09-02) |
 | Models | `lm_studio` (local server), `invoke_model` (recursive Bedrock call) |
 | Self / meta | `edit_harness`, `run_mirror_council` |
 

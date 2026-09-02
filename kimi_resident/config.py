@@ -34,7 +34,9 @@ MCP_SERVER_NAME = "resident"
 # The tools yue gets: the subset of claude_resident's 31 that needs only
 # state + zulip + web. Excluded for now: the Bedrock-backed ones
 # (invoke_model), docker sandbox, self-modification (edit_harness), mirror
-# council, background tasks, X/postmark, uploads.
+# council, background tasks, X/postmark, uploads. (Scry is not in this
+# list: it is a separate remote MCP server registered by
+# engine._prepare_home, not part of the suite.)
 TOOL_SUBSET = [
     # state
     "read_state_file", "write_state_file", "edit_state_file",
