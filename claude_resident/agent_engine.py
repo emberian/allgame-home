@@ -68,8 +68,17 @@ logger = logging.getLogger("agent_engine")
 VISIBLE_TOOLS = {"send_message", "send_dm", "add_reaction"}
 
 # Rejections that mean "this account is out", not "this turn failed".
+# The last two are not limits but the same remedy applies: on 2026-09-03
+# ~03:40 four of the accounts started answering every request with
+# "Your organization has disabled Claude subscription access for Claude
+# Code" (raw API: oauth_not_allowed_for_organization). The engine did not
+# know the phrase, so it never rotated off the dead account — he sat mute
+# on tobb@ for 32 hours while four usable accounts idled, every failure
+# logged as the SDK's uninformative "error result: success".
 _LIMIT_MARKERS = ("weekly limit", "usage limit", "rate limit",
-                  "hit your limit", "resets ", "quota")
+                  "hit your limit", "resets ", "quota",
+                  "disabled claude subscription access",
+                  "not allowed for this organization")
 # How many spent accounts to walk past before giving up on a turn. Each
 # rotation costs a cold prefill, so this is not free — but with the
 # drain-emptiest-first policy the next account is routinely near its limit
