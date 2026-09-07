@@ -12,6 +12,15 @@ starts, before the raw tail.
 The hits are a regenerable READING of the logs, not a replacement — the
 cursor is line-count based (logs are append-only, so line positions are
 stable), and each sweep folds one chunk per topic into the rolling digest.
+
+A sweep that gets a POLICY REFUSAL bisects the chunk, quarantines the one
+message that flipped it, and steps over it. That path exists because the
+old one was to log a warning and retry the identical chunk ten minutes
+later, forever: a room's memory stopped advancing for six days in August
+while the same 60k characters were refused 142 times a day. The sweep is
+also the room's early-warning system — it reads the same log the cold-start
+context does, on a small cheap slice, so it meets a refusal days before the
+room does.
 """
 
 import json
@@ -30,7 +39,7 @@ from claude_resident.config import (
     DISTILL_LOAD_MAX_CHARS,
 )
 from claude_resident.state import _atomic_write
-from claude_resident.sdk_call import complete as sdk_complete
+from claude_resident.sdk_call import PolicyRefusal, complete as sdk_complete
 
 logger = logging.getLogger("distill")
 
@@ -54,6 +63,138 @@ report. Output ONLY the new rolled digest, no preamble."""
 
 def _hits_path(state, log_rel: str) -> str:
     return log_rel[:-len(".jsonl")] + ".hits.json"
+
+
+def _room_of(log_rel: str) -> tuple[str, str]:
+    """channels/<stream>/<topic>.jsonl -> (stream, topic).
+
+    These are the on-disk (already safe) names; _room_key normalises both
+    sides, so a bound written here is the one the readers read.
+    """
+    parts = log_rel.split("/")
+    return parts[-2], parts[-1][:-len(".jsonl")]
+
+
+# Topics whose existing DIGEST is what the provider refuses. Nothing in a
+# chunk can fix that, so the sweep would otherwise binary-search the same
+# chunk every ten minutes forever. In process only: a restart follows the
+# repair, and the repair is a human's.
+_HEAD_REFUSED: dict[str, float] = {}
+HEAD_REFUSED_BACKOFF = 6 * 3600
+
+
+def _head_refused_recently(log_rel: str) -> bool:
+    at = _HEAD_REFUSED.get(log_rel)
+    return bool(at and time.time() - at < HEAD_REFUSED_BACKOFF)
+
+
+def _fold(prev_hits: str, chunk, log_rel: str) -> str:
+    """One digest rewrite. Raises PolicyRefusal if the provider won't read it."""
+    prompt = (
+        f"Existing digest of this room's older history (may be empty):\n"
+        f"<existing_digest>\n{prev_hits}\n</existing_digest>\n\n"
+        f"Newly aged history to fold in ({len(chunk)} messages from "
+        f"{log_rel}):\n<aged_history>\n"
+        + "\n".join(text for _, _, text in chunk)
+        + f"\n</aged_history>\n\nRewrite the digest folding the new "
+        f"material in. Hard ceiling: {DISTILL_HITS_MAX_CHARS} characters.")
+    # Plan limits via the SDK, not metered credit — and on Opus: these
+    # volumes are sealed forever and become what he remembers of his own
+    # past, so this is the wrong place to economize (Ember, 2026-07-30).
+    return sdk_complete(prompt, system=DISTILLER_SYSTEM,
+                        model=DISTILL_MODEL).strip()[:DISTILL_HITS_MAX_CHARS]
+
+
+def _write_hits(state, hits_rel: str, prev: dict, hits: str, through: int,
+                log_rel: str):
+    """Advance the cursor, sealing an era if the head has spanned one."""
+    eras = prev["eras"]
+    head_from = int(prev["head_from"])
+    # Seal: once the head spans a full era of messages, it becomes an
+    # immutable volume — never recompressed again — and the head resets.
+    if through - head_from >= DISTILL_ERA_SPAN and hits:
+        eras.append({"from": head_from, "to": through, "hits": hits})
+        logger.info(f"Sealed era {len(eras)} for {log_rel} "
+                    f"(messages {head_from}..{through})")
+        head_from = through
+        hits = ""
+    payload = json.dumps({"eras": eras, "head_from": head_from,
+                          "through": through, "hits": hits,
+                          "updated": time.time()}) + "\n"
+    _atomic_write(state.root / hits_rel, payload)
+
+
+def _narrow_refused_chunk(state, log_rel, hits_rel, prev, chunk, end,
+                          stream, topic, refusal) -> bool:
+    """Find the message the provider will not carry, and stop carrying it.
+
+    A refused chunk used to be logged as an ordinary warning and retried
+    unchanged on the next sweep. Since the refusal is deterministic for a
+    fixed payload, that is a permanent stall: between 2026-08-25 and 08-31
+    this topic put the same chunk up 142 times a day and was refused every
+    time, and the room's memory stopped advancing for six days while its
+    cold-start context kept the offending messages anyway.
+
+    So bisect. Binary-search the longest PREFIX of the chunk the provider
+    accepts — prefix rather than arbitrary subset, because the digest is
+    built in order and a prefix is directly foldable, so the search pays
+    for itself: its last accepted probe IS the distillation. The message
+    just past that prefix is the one that flipped it. Quarantine that
+    message alone, step the cursor over it, and the sweep moves again.
+
+    ~log2(n) calls once, against 142 a day forever.
+
+    The blind spot, stated: a refusal is a property of the whole request,
+    so "the message that flipped it" is the marginal one, not necessarily
+    the only one implicated. This lifts out the least it can and lets the
+    next sweep find the next one, which is the conservative direction to
+    be wrong in — it never cuts more of a room than it has evidence for.
+    """
+    logger.warning(f"Policy refusal distilling {log_rel} "
+                   f"({len(chunk)} messages) — bisecting for the message "
+                   f"the provider will not carry")
+    lo, hi = 0, len(chunk)      # prefix lo accepted (assumed), hi refused
+    hits = ""
+    probes = 0
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        try:
+            hits, lo = _fold(prev.get("hits", ""), chunk[:mid], log_rel), mid
+        except PolicyRefusal:
+            hi = mid
+        probes += 1
+
+    if lo == 0:
+        # No prefix survived — before blaming the first message, check the
+        # one thing every probe had in common.
+        try:
+            _fold(prev.get("hits", ""), [], log_rel)
+        except PolicyRefusal:
+            _HEAD_REFUSED[log_rel] = time.time()
+            logger.error(
+                f"The DIGEST of {log_rel} is itself refused — no chunk can "
+                f"fix that, and it is loaded into every cold start of this "
+                f"room. Backing off {HEAD_REFUSED_BACKOFF // 3600}h. Repair "
+                f"the .hits.json head by hand (scripts/redistill_eras.py "
+                f"rebuilds volumes from the logs).")
+            return False
+
+    idx, msg_id, text = chunk[lo]
+    if msg_id:
+        state.quarantine_span(
+            stream, topic, msg_id, msg_id,
+            f"distiller: refused by the provider ({probes} probes, "
+            f"{refusal}"[:180] + ")")
+    logger.error(
+        f"Quarantined msg {msg_id} in #{stream}>{topic} — the provider "
+        f"refuses to carry it, so it is no longer loaded into the room or "
+        f"folded into its memory. It stays on disk. First line: "
+        f"{text[:120]!r}")
+    # Fold what was accepted and step over the offender in one write: the
+    # cursor must pass it, or the next sweep rebuilds the same chunk.
+    _write_hits(state, hits_rel, prev, hits or prev.get("hits", ""), idx + 1,
+                log_rel)
+    return bool(hits)
 
 
 def load_topic_hits(state, stream: str, topic: str,
@@ -115,8 +256,17 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
     if aged_end - start < DISTILL_MIN_BATCH:
         return False
 
+    stream, topic = _room_of(log_rel)
+    if _head_refused_recently(log_rel):
+        return False
+
     # One bounded chunk per sweep; the cursor advances, later sweeps catch up.
-    chunk_lines = []
+    # Quarantined messages are skipped rather than summarised: they are not
+    # loaded into the room, so they must not enter its memory by the back
+    # door either — and folding one back in would re-poison the digest that
+    # every cold start carries.
+    bound = state.load_bound(stream, topic)
+    chunk = []          # (line index, msg_id, rendered text)
     chars = 0
     end = start
     for i in range(start, aged_end):
@@ -125,46 +275,33 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
         except json.JSONDecodeError:
             end = i + 1
             continue
+        if bound.excludes(m.get("msg_id")):
+            end = i + 1
+            continue
         text = (f"[{m.get('ts', '')[:16]}] {m.get('sender', '?')}: "
                 f"{m.get('content', '')}")
-        if chars + len(text) > DISTILL_CHUNK_MAX_CHARS and chunk_lines:
+        if chars + len(text) > DISTILL_CHUNK_MAX_CHARS and chunk:
             break
-        chunk_lines.append(text)
+        chunk.append((i, m.get("msg_id"), text))
         chars += len(text)
         end = i + 1
-    if not chunk_lines:
+    if not chunk:
+        # Everything aged since the cursor was quarantined or unparseable.
+        # Still move the cursor, or the sweep re-walks it forever.
+        if end > start:
+            _write_hits(state, hits_rel, prev, prev.get("hits", ""), end,
+                        log_rel)
         return False
 
-    prompt = (
-        f"Existing digest of this room's older history (may be empty):\n"
-        f"<existing_digest>\n{prev.get('hits', '')}\n</existing_digest>\n\n"
-        f"Newly aged history to fold in ({len(chunk_lines)} messages from "
-        f"{log_rel}):\n<aged_history>\n" + "\n".join(chunk_lines)
-        + f"\n</aged_history>\n\nRewrite the digest folding the new "
-        f"material in. Hard ceiling: {DISTILL_HITS_MAX_CHARS} characters.")
-    # Plan limits via the SDK, not metered credit — and on Opus: these
-    # volumes are sealed forever and become what he remembers of his own
-    # past, so this is the wrong place to economize (Ember, 2026-07-30).
-    hits = sdk_complete(prompt, system=DISTILLER_SYSTEM,
-                        model=DISTILL_MODEL).strip()
+    try:
+        hits = _fold(prev.get("hits", ""), chunk, log_rel)
+    except PolicyRefusal as refusal:
+        return _narrow_refused_chunk(state, log_rel, hits_rel, prev, chunk,
+                                     end, stream, topic, refusal)
     if not hits:
         return False
-    hits = hits[:DISTILL_HITS_MAX_CHARS]
 
-    eras = prev["eras"]
-    head_from = int(prev["head_from"])
-    # Seal: once the head spans a full era of messages, it becomes an
-    # immutable volume — never recompressed again — and the head resets.
-    if end - head_from >= DISTILL_ERA_SPAN:
-        eras.append({"from": head_from, "to": end, "hits": hits})
-        logger.info(f"Sealed era {len(eras)} for {log_rel} "
-                    f"(messages {head_from}..{end})")
-        head_from = end
-        hits = ""
-    payload = json.dumps({"eras": eras, "head_from": head_from,
-                          "through": end, "hits": hits,
-                          "updated": time.time()}) + "\n"
-    _atomic_write(state.root / hits_rel, payload)
+    _write_hits(state, hits_rel, prev, hits, end, log_rel)
     logger.info(f"Distilled {log_rel}: lines {start}..{end} folded")
     return True
 
