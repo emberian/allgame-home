@@ -105,17 +105,26 @@ def main():
     ap.add_argument("--add", type=parse_span, action="append", default=[],
                     metavar="LO-HI", help="inclusive span; repeatable")
     ap.add_argument("--remove", type=parse_span, metavar="LO-HI")
+    ap.add_argument("--set-floor", type=int, metavar="MSG_ID",
+                    help="the other instrument: stop loading EVERYTHING at "
+                         "or below this id. Reach for spans first — this one "
+                         "forgets a room's whole past to remove part of it, "
+                         "and is for when the refused material is too dense "
+                         "to name.")
     ap.add_argument("--why", default="",
                     help="what this cut is for — recorded alongside it")
     ap.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     args = ap.parse_args()
 
     state = StateManager(args.state_dir)
+    if args.set_floor is not None:
+        state.set_context_floor(args.stream, args.topic, args.set_floor)
     if args.remove:
         remove(state, args.stream, args.topic, args.remove)
     for lo, hi in args.add:
         state.quarantine_span(args.stream, args.topic, lo, hi, args.why)
-    if args.list or not (args.add or args.remove):
+    if args.list or not (args.add or args.remove or
+                         args.set_floor is not None):
         show(state, args.stream, args.topic)
 
 
