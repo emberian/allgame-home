@@ -60,6 +60,7 @@ from claude_resident.session_summary import recent_sessions_block
 from claude_resident.sandbox import cleanup_sandbox
 from claude_resident.tools.definitions import TOOL_DEFINITIONS
 from claude_resident.tools.dispatch import ToolContext, execute_tool
+from claude_resident.util import is_policy_refusal
 
 logger = logging.getLogger("agent_engine")
 
@@ -86,19 +87,18 @@ _LIMIT_MARKERS = ("weekly limit", "usage limit", "rate limit",
 MAX_LIMIT_ROTATIONS = 4
 
 
-_REFUSAL_MARKERS = ("can't help with this", "cannot help with this",
-                    "legal/aup")
-
-
-def _is_policy_refusal(text) -> bool:
-    """A provider-side policy refusal, as opposed to Claude declining.
-
-    Distinct from a limit: rotating accounts cannot fix it, because every
-    account sees the same context. What fixes it is retiring the bound
-    session carrying the offending history — the room is reborn from the
-    logs and keeps talking."""
-    t = str(text).lower()
-    return any(m in t for m in _REFUSAL_MARKERS)
+# How much of a room's past a birth payload carries. The ladder a cold-start
+# refusal walks down, in order.
+#
+# There is no rung between FULL and MEMORY: the raw tail is loaded
+# newest-first under a char budget, so trimming it drops the OLDEST
+# messages, and the material a classifier objects to is characteristically
+# what the room is currently metabolising. A half-sized tail would be one
+# more refused 450k-token prefill for the case that almost never happens.
+BIRTH_FULL = "full"        # era digests + the raw tail
+BIRTH_MEMORY = "memory"    # era digests only — the room as remembered
+BIRTH_NONE = "none"        # a stranger who can still hear the room
+BIRTH_LADDER = (BIRTH_FULL, BIRTH_MEMORY, BIRTH_NONE)
 
 
 def _is_limit_error(exc) -> bool:
@@ -215,6 +215,11 @@ class AgentEngine:
         self._limit_reason: str | None = None
         # Set when the provider refuses the whole request on policy grounds.
         self._refusal_reason: str | None = None
+        # Rooms whose birth payload had to be cut down to get past a policy
+        # refusal, and how far. In-process only, and deliberately so: a
+        # remembered rung must not outlive the quarantine edit that fixes
+        # the room, and edits here take a restart anyway.
+        self._birth_rung: dict[str, str] = {}
         # ONE turn at a time. _ctx / _turn_sends / _turn_visible are per-turn
         # state living on the instance, and since the solitude thread landed
         # (2026-07-30) two threads can call respond() at once: a finishing
@@ -346,7 +351,9 @@ class AgentEngine:
         # payload replaces tier 4 wholesale.
         birth_payload = ""
         if binding is not None and cold:
-            birth_payload = self._birth_payload(stream, topic)
+            birth_payload = self._birth_payload(
+                stream, topic,
+                rung=self._birth_rung.get(f"{stream}|{topic}", BIRTH_FULL))
 
         system_blocks = build_tiered_system_prompt(
             self.resident.state, stream, topic, trigger,
@@ -420,6 +427,7 @@ class AgentEngine:
         # is text" — this is the counterweight that keeps turns audible.
         if not solitude:
             prompt_text += "\n\n[send_message to reply]"
+        bare_prompt = prompt_text   # the turn without its birth payload
         if birth_payload:
             prompt_text = birth_payload + "\n\n" + prompt_text
             logger.info(
@@ -520,20 +528,21 @@ class AgentEngine:
                     binding_key = f"{stream}|{topic}"
                     bound = (self._load_bindings().get(binding_key) or {})
                     if not bound.get("sdk_session_id"):
-                        logger.error(
-                            f"Policy refusal in #{stream}>{topic} with no "
-                            f"bound session to retire — the content is in "
-                            f"the cold-start context ({reason[:80]})")
-                        raise
-                    logger.warning(
-                        f"Policy refusal in #{stream}>{topic} — retiring "
-                        f"bound session for rebirth ({reason[:80]})")
-                    self._save_binding_fields(
-                        binding_key, sdk_session_id="", context_tokens=0)
-                    session.sdk_session_id = None
-                    internal_text, assistant_record = asyncio.run(
-                        self._run_turn(prompt_text, options, session,
-                                       stream, topic, sender))
+                        internal_text, assistant_record = \
+                            self._descend_birth_ladder(
+                                binding_key, reason, bare_prompt, options,
+                                session, stream, topic, sender)
+                    else:
+                        logger.warning(
+                            f"Policy refusal in #{stream}>{topic} — "
+                            f"retiring bound session for rebirth "
+                            f"({reason[:80]})")
+                        self._save_binding_fields(
+                            binding_key, sdk_session_id="", context_tokens=0)
+                        session.sdk_session_id = None
+                        internal_text, assistant_record = asyncio.run(
+                            self._run_turn(prompt_text, options, session,
+                                           stream, topic, sender))
                 elif self._limit_reason or _is_limit_error(e):
                     # Plan limits are per ACCOUNT and tokeman holds several,
                     # so a rejection means this account is spent, not that
@@ -628,18 +637,84 @@ class AgentEngine:
     # Persistent-room birth
     # ------------------------------------------------------------------
 
-    def _birth_payload(self, stream: str, topic: str) -> str:
+    def _descend_birth_ladder(self, binding_key: str, reason: str,
+                              bare_prompt: str, options, session,
+                              stream: str, topic: str, sender: str):
+        """Keep a room audible when its own history is what gets refused.
+
+        This is the case the bound-session retirement cannot reach: there
+        is no session to retire, because the refused content arrived in the
+        birth payload we just built. Rotating accounts is useless — every
+        account reads the same room — and retrying is useless too, since
+        the classifier is deterministic on a fixed payload (the distiller
+        put the same chunk up ~850 consecutive times over 2026-08-25..31
+        and was refused every time).
+
+        So carry less of the room. Each rung is a different KIND of
+        forgetting rather than a smaller amount of it, because the raw tail
+        loads newest-first and trimming it drops exactly the wrong end.
+
+        This is triage, not a fix. A room parked on a lower rung has lost
+        its transcript, or its memory, until someone quarantines the
+        messages the provider will not carry — which is why landing here is
+        logged at ERROR and names the tool. The rung is remembered in
+        process so the room does not pay a refused 450k-token prefill on
+        every turn while that is waited for.
+        """
+        start = BIRTH_LADDER.index(self._birth_rung.get(binding_key,
+                                                        BIRTH_FULL))
+        for rung in BIRTH_LADDER[start + 1:]:
+            logger.error(
+                f"Policy refusal in #{stream}>{topic} with no bound session "
+                f"to retire — the content is in the cold-start context. "
+                f"Descending to birth rung {rung!r} ({reason[:80]})")
+            payload = self._birth_payload(stream, topic, rung=rung)
+            prompt = f"{payload}\n\n{bare_prompt}" if payload else bare_prompt
+            self._refusal_reason = None
+            try:
+                result = asyncio.run(
+                    self._run_turn(prompt, options, session,
+                                   stream, topic, sender))
+            except Exception:
+                if not self._refusal_reason:
+                    raise      # a different failure — not ours to swallow
+                reason = self._refusal_reason
+                self._refusal_reason = None
+                continue
+            self._birth_rung[binding_key] = rung
+            logger.error(
+                f"#{stream}>{topic} is now running on birth rung {rung!r} — "
+                f"it has lost "
+                + ("its raw transcript" if rung == BIRTH_MEMORY
+                   else "its whole past")
+                + ". Quarantine the messages the provider refuses "
+                  "(scripts/refusal_probe.py to find them, "
+                  "scripts/quarantine.py to lift them out) and restart.")
+            return result
+        logger.error(
+            f"#{stream}>{topic} refused even with no history at all — the "
+            f"trigger is in the message being answered or in the system "
+            f"prompt, not in the room ({reason[:80]})")
+        raise RuntimeError(f"policy refusal survives an empty birth "
+                           f"payload in #{stream}>{topic}: {reason[:200]}")
+
+    def _birth_payload(self, stream: str, topic: str,
+                       rung: str = BIRTH_FULL) -> str:
         """The months, handed to a persistent room on its first breath.
 
         Era digests (all of them, uncapped — this is the one place the
         newest-biased load cap doesn't apply) plus the largest raw tail
-        that fits the budget. Goes in the PROMPT, not the system block:
+        that fits the budget, or less of both if `rung` says the provider
+        refused the fuller ones. Goes in the PROMPT, not the system block:
         it belongs to session history, gets cached once, and compaction
         folds it gradually as the window scrolls — whereas a system-block
         payload would be re-sent every single turn AND hit the argv
         ceiling (the prompt travels via stdin; system_prompt does not).
         """
         from claude_resident.distill import load_topic_hits
+
+        if rung == BIRTH_NONE:
+            return ""
 
         parts = []
         hits = load_topic_hits(self.resident.state, stream, topic,
@@ -651,10 +726,11 @@ class AgentEngine:
                 f"impressions. The raw history below picks up where these "
                 f"leave off.\n\n{hits}\n</room_memory>")
 
-        raw = self.resident.state.get_recent_topic_context(
-            stream, topic, n=10 ** 6,
-            reactions=self.resident.reactions,
-            max_tokens=PERSISTENT_BIRTH_RAW_CHARS // 4)
+        raw = "" if rung == BIRTH_MEMORY else \
+            self.resident.state.get_recent_topic_context(
+                stream, topic, n=10 ** 6,
+                reactions=self.resident.reactions,
+                max_tokens=PERSISTENT_BIRTH_RAW_CHARS // 4)
         if raw:
             parts.append(
                 f'<room_history stream="{stream}" topic="{topic}">\n'
@@ -783,7 +859,7 @@ class AgentEngine:
                     # already be gone. See _query_surfacing_limits.
                     if _is_limit_error(msg.result):
                         self._limit_reason = str(msg.result)
-                    elif _is_policy_refusal(msg.result):
+                    elif is_policy_refusal(msg.result):
                         # Not our content — the CONTEXT. Recorded here for
                         # the same reason as _limit_reason: the exception
                         # that follows says only "error result: success".
