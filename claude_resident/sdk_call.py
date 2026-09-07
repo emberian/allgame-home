@@ -17,11 +17,32 @@ import asyncio
 import logging
 
 from claude_resident.config import AGENT_SDK_CONFIG_DIR, MODEL_IDS
+from claude_resident.util import is_policy_refusal
 
 logger = logging.getLogger("sdk_call")
 
 
-async def _run(prompt: str, system: str, model: str, max_turns: int) -> str:
+class PolicyRefusal(RuntimeError):
+    """The provider refused the whole request on policy grounds.
+
+    Worth its own type because the caller's correct response is entirely
+    different from every other failure here: retrying is pointless (the
+    classifier is deterministic on a fixed payload) and rotating accounts
+    is pointless (every account reads the same prompt). The only move is to
+    send something else.
+
+    The SDK makes this hard to see. A refusal it observed on the wire can
+    reach the caller as "Claude Code returned an error result: success",
+    with the reason stripped and the exception surfacing at asyncio.run()
+    teardown rather than out of the generator — so the reason is recorded
+    in a holder the caller owns, the same seam agent_engine uses. Without
+    it the distiller spent 2026-08-25..31 retrying one refused chunk every
+    ten minutes and logging it as an ordinary warning.
+    """
+
+
+async def _run(prompt: str, system: str, model: str, max_turns: int,
+               seen: dict | None = None) -> str:
     from claude_agent_sdk import (ClaudeAgentOptions, AssistantMessage,
                                   ResultMessage, query)
     from claude_resident.auth import read_oauth_token
@@ -58,7 +79,11 @@ async def _run(prompt: str, system: str, model: str, max_turns: int) -> str:
                     parts.append(text)
         elif isinstance(msg, ResultMessage) and msg.is_error:
             failure = f"sdk_call error: {msg.result!r}"
+            if seen is not None and is_policy_refusal(msg.result):
+                seen["refusal"] = str(msg.result)
     if failure:
+        if seen is not None and seen.get("refusal"):
+            raise PolicyRefusal(seen["refusal"])
         raise RuntimeError(failure)
     return "\n".join(parts).strip()
 
@@ -75,4 +100,15 @@ def complete(prompt: str, system: str = "", model: str | None = None,
     if big_context and not chosen.endswith("[1m]"):
         # A whole era of chat can exceed the 200k default window.
         chosen += "[1m]"
-    return asyncio.run(_run(prompt, system, chosen, max_turns))
+    # The holder must outlive the event loop: the exception carrying a
+    # refusal can land at asyncio.run() teardown, by which point anything
+    # local to the coroutine is gone.
+    seen: dict = {}
+    try:
+        return asyncio.run(_run(prompt, system, chosen, max_turns, seen))
+    except PolicyRefusal:
+        raise
+    except Exception as e:
+        if seen.get("refusal") or is_policy_refusal(e):
+            raise PolicyRefusal(seen.get("refusal") or str(e)) from e
+        raise

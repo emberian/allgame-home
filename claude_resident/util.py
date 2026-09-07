@@ -11,6 +11,22 @@ import requests
 logger = logging.getLogger("util")
 
 
+_REFUSAL_MARKERS = ("can't help with this", "cannot help with this",
+                    "legal/aup")
+
+
+def is_policy_refusal(text) -> bool:
+    """A provider-side policy refusal, as opposed to Claude declining.
+
+    Distinct from a limit: rotating accounts cannot fix it, because every
+    account sees the same context. Lives here rather than in the engine
+    because the sidecars need it too — the distiller has been eating these
+    silently, retrying one refused chunk every ten minutes for weeks.
+    """
+    t = str(text).lower()
+    return any(m in t for m in _REFUSAL_MARKERS)
+
+
 def safe_filename(name: str) -> str:
     """Convert a display name to a safe filename."""
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name).lower()
