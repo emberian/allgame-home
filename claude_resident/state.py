@@ -38,10 +38,78 @@ def _reaction_suffix(msg_id, reactions) -> str:
 
 
 CONTEXT_FLOORS_FILE = "context_floors.json"
+CONTEXT_QUARANTINE_FILE = "context_quarantine.json"
 
 
-def _floor_key(stream: str, topic: str) -> str:
-    return f"{stream}|{topic}"
+def _room_key(stream: str, topic: str) -> str:
+    """One identity for a room, whichever reader is asking.
+
+    Normalised, because the three readers do not agree on how they name a
+    topic: two pass the Zulip topic through, the cross-stream tail passes
+    the log file's stem. For "tavern" those coincide and the difference
+    never showed; for "mee-moo place" they do not, and a bound set through
+    one reader would be silently ignored by another.
+    """
+    return f"{safe_filename(stream)}|{safe_filename(topic) if topic else '_notopic'}"
+
+
+_floor_key = _room_key   # the name the floor shipped under
+
+
+class LoadBound:
+    """What a room does not load — the floor and the quarantine together.
+
+    Two shapes of the same rule. A FLOOR is a line: everything at or below
+    it stops being loaded, which is the only instrument that helps when a
+    room's whole recent past is what gets refused. A QUARANTINE is a set of
+    spans: it lifts out named messages and leaves the timeline around them
+    intact, which is the instrument for the far commoner case — a handful
+    of messages the provider will not carry, sitting in the middle of a
+    month nobody wants to forget.
+
+    The floor is a guillotine and the quarantine is a scalpel. Reach for
+    the scalpel; the floor exists for the day the whole arm is gangrenous.
+
+    Neither deletes. Both bound what is LOADED, never what is stored.
+    """
+
+    __slots__ = ("floor", "spans")
+
+    def __init__(self, floor: int = 0, spans=()):
+        self.floor = int(floor or 0)
+        self.spans = tuple((int(a), int(b)) for a, b in spans)
+
+    def __bool__(self) -> bool:
+        return bool(self.floor or self.spans)
+
+    def excludes(self, msg_id) -> bool:
+        if msg_id is None:
+            return False
+        if self.floor and msg_id <= self.floor:
+            return True
+        return any(lo <= msg_id <= hi for lo, hi in self.spans)
+
+    def __repr__(self) -> str:
+        return f"LoadBound(floor={self.floor}, spans={list(self.spans)})"
+
+
+def _parse_spans(entry) -> list[tuple[int, int]]:
+    """Spans out of one quarantine record, tolerant of hand-editing.
+
+    Accepts [[lo, hi], ...] and bare ints alike, because this file gets
+    edited by a person at speed while a room is mute.
+    """
+    spans = []
+    for item in (entry or {}).get("spans") or []:
+        try:
+            if isinstance(item, (list, tuple)):
+                lo, hi = int(item[0]), int(item[-1])
+            else:
+                lo = hi = int(item)
+        except (TypeError, ValueError, IndexError):
+            continue
+        spans.append((lo, hi) if lo <= hi else (hi, lo))
+    return spans
 
 def _apply_edit(msg: dict, edits: dict[int, str]) -> tuple[str, str]:
     """Fold the newest edit over a logged message.
@@ -275,6 +343,70 @@ class StateManager:
                        "below that id is no longer loaded", stream, topic,
                        msg_id)
 
+    def context_quarantine(self, stream: str, topic: str) \
+            -> list[tuple[int, int]]:
+        """Message spans lifted out of this room's loaded context.
+
+        The floor's problem is that it can only cut backwards, and a
+        refusal does not politely confine itself to the far past — the
+        arc that took the tavern down on 2026-09-06 was three hours old
+        and still being lived. Excluding it with a floor would have cost
+        the room every message it had, to remove the newest ones.
+
+        So name them instead. Spans are inclusive, stored per room, and
+        the messages stay on disk exactly as written.
+        """
+        try:
+            raw = self.read_file(CONTEXT_QUARANTINE_FILE)
+            if not raw:
+                return []
+            data = json.loads(raw)
+        except (ValueError, TypeError, AttributeError):
+            return []
+        return _parse_spans(data.get(_floor_key(stream, topic)))
+
+    def quarantine_span(self, stream: str, topic: str, lo: int, hi: int,
+                        why: str = ""):
+        """Add one inclusive span to a room's quarantine.
+
+        `why` accumulates rather than overwrites: this file is a record of
+        deliberate acts on a community's transcript, and the next person
+        to read it deserves to know what each cut was for.
+        """
+        try:
+            data = json.loads(self.read_file(CONTEXT_QUARANTINE_FILE) or "{}")
+        except ValueError:
+            data = {}
+        key = _floor_key(stream, topic)
+        entry = data.get(key) or {}
+        spans = _parse_spans(entry)
+        lo, hi = (int(lo), int(hi)) if lo <= hi else (int(hi), int(lo))
+        if (lo, hi) not in spans:
+            spans.append((lo, hi))
+        entry["spans"] = [list(sp) for sp in sorted(spans)]
+        if why:
+            notes = entry.get("why") or []
+            if isinstance(notes, str):
+                notes = [notes]
+            notes.append(f"{lo}-{hi}: {why}")
+            entry["why"] = notes
+        data[key] = entry
+        self.write_file(CONTEXT_QUARANTINE_FILE,
+                        json.dumps(data, indent=1) + "\n")
+        logger.warning("Quarantined %s..%s in %s|%s — those messages stay on "
+                       "disk and stop being loaded (%s)", lo, hi, stream,
+                       topic, why or "no reason given")
+
+    def load_bound(self, stream: str, topic: str) -> LoadBound:
+        """Everything this room does not load, as one predicate.
+
+        Read once per reader call and passed down — never consulted
+        per-message, which would re-parse two files 2,000 times to build
+        one cold start.
+        """
+        return LoadBound(self.context_floor(stream, topic),
+                         self.context_quarantine(stream, topic))
+
     def load_edits(self, log_path: Path) -> dict[int, str]:
         """msg_id -> current text, for one topic log. Later records win, so
         a message edited three times renders its third version."""
@@ -312,7 +444,7 @@ class StateManager:
             return ""
         return self._format_log(path, n, reactions=reactions,
                                 max_tokens=max_tokens,
-                                floor=self.context_floor(stream, topic))
+                                bound=self.load_bound(stream, topic))
 
     def get_recent_stream_context(self, stream: str, n: int = 100,
                                   reactions: dict[int, dict[str, int]] | None = None,
@@ -332,18 +464,17 @@ class StateManager:
             # Zulip ids are globally unique, so one merged map serves every
             # topic in the stream.
             edits.update(self.load_edits(log_file))
-            # A floor has to apply here too: this is the cross-stream tail
-            # injected into OTHER rooms' cold starts, which is how one
+            # The bound has to apply here too: this is the cross-stream
+            # tail injected into OTHER rooms' cold starts, which is how one
             # poisoned topic took every room down on 2026-08-22.
-            floor = self.context_floor(stream, log_file.stem)
+            bound = self.load_bound(stream, log_file.stem)
             for line in log_file.read_text().strip().split("\n"):
                 if line:
                     try:
                         m = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    mid = m.get("msg_id")
-                    if floor and mid is not None and mid <= floor:
+                    if bound.excludes(m.get("msg_id")):
                         continue
                     all_messages.append(m)
         all_messages.sort(key=lambda m: m.get("ts", ""))
@@ -392,7 +523,7 @@ class StateManager:
         if not path.exists():
             return ""
         exclude_ids = exclude_ids or set()
-        floor = self.context_floor(stream, topic)
+        bound = self.load_bound(stream, topic)
         edits = self.load_edits(path)
         lines = []
         for line in path.read_text().strip().split("\n"):
@@ -403,7 +534,7 @@ class StateManager:
             mid = m.get("msg_id")
             if not mid or mid <= since_id or mid in exclude_ids:
                 continue
-            if floor and mid <= floor:
+            if bound.excludes(mid):
                 continue
             sender = m.get("sender", "?")
             if exclude_sender and exclude_sender in sender.lower():
@@ -456,20 +587,20 @@ class StateManager:
 
     def _format_log(self, path: Path, n: int = 500,
                     reactions: dict[int, dict[str, int]] | None = None,
-                    max_tokens: int = 0, floor: int = 0) -> str:
+                    max_tokens: int = 0, bound: LoadBound | None = None) -> str:
         """Format log lines, optionally capped by token budget.
 
-        `floor` drops every message at or below that id — see
-        context_floor(). The lines stay in the file; they stop being read."""
+        `bound` drops the messages this room no longer loads — see
+        LoadBound. The lines stay in the file; they stop being read."""
         lines = path.read_text().strip().split("\n")
-        if floor:
+        if bound:
             kept = []
             for ln in lines:
                 try:
                     mid = json.loads(ln).get("msg_id")
                 except (json.JSONDecodeError, AttributeError):
                     continue
-                if mid is None or mid > floor:
+                if not bound.excludes(mid):
                     kept.append(ln)
             lines = kept
         edits = self.load_edits(path)
