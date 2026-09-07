@@ -26,6 +26,7 @@ Design invariants:
 """
 
 import json
+import time
 import asyncio
 import difflib
 import logging
@@ -99,6 +100,14 @@ BIRTH_FULL = "full"        # era digests + the raw tail
 BIRTH_MEMORY = "memory"    # era digests only — the room as remembered
 BIRTH_NONE = "none"        # a stranger who can still hear the room
 BIRTH_LADDER = (BIRTH_FULL, BIRTH_MEMORY, BIRTH_NONE)
+# How long a room stays on a reduced rung before trying its full past
+# again. It has to expire, because acceptance is NOT deterministic at the
+# margin: an identical 564k-char tavern payload was accepted and then
+# refused within the same ten minutes (measured 2026-09-06). A rung
+# remembered forever would let one unlucky draw cost a room its transcript
+# for the life of the process; a rung remembered for nothing would make a
+# marginal room pay a refused 450k-token prefill on every single turn.
+BIRTH_RUNG_TTL = 30 * 60
 
 
 def _is_limit_error(exc) -> bool:
@@ -216,10 +225,10 @@ class AgentEngine:
         # Set when the provider refuses the whole request on policy grounds.
         self._refusal_reason: str | None = None
         # Rooms whose birth payload had to be cut down to get past a policy
-        # refusal, and how far. In-process only, and deliberately so: a
-        # remembered rung must not outlive the quarantine edit that fixes
-        # the room, and edits here take a restart anyway.
-        self._birth_rung: dict[str, str] = {}
+        # refusal: rung, and when we settled for it. In-process only, and
+        # deliberately so — a remembered rung must not outlive the
+        # quarantine edit that fixes the room, and edits take a restart.
+        self._birth_rung: dict[str, tuple[str, float]] = {}
         # ONE turn at a time. _ctx / _turn_sends / _turn_visible are per-turn
         # state living on the instance, and since the solitude thread landed
         # (2026-07-30) two threads can call respond() at once: a finishing
@@ -352,8 +361,7 @@ class AgentEngine:
         birth_payload = ""
         if binding is not None and cold:
             birth_payload = self._birth_payload(
-                stream, topic,
-                rung=self._birth_rung.get(f"{stream}|{topic}", BIRTH_FULL))
+                stream, topic, rung=self._remembered_rung(f"{stream}|{topic}"))
 
         system_blocks = build_tiered_system_prompt(
             self.resident.state, stream, topic, trigger,
@@ -637,6 +645,16 @@ class AgentEngine:
     # Persistent-room birth
     # ------------------------------------------------------------------
 
+    def _remembered_rung(self, binding_key: str) -> str:
+        """The rung this room settled for, until it is worth trying up again."""
+        rung, at = self._birth_rung.get(binding_key, (BIRTH_FULL, 0.0))
+        if rung != BIRTH_FULL and time.time() - at > BIRTH_RUNG_TTL:
+            logger.info(f"Birth rung for {binding_key} expired after "
+                        f"{BIRTH_RUNG_TTL // 60}m — trying its full past again")
+            del self._birth_rung[binding_key]
+            return BIRTH_FULL
+        return rung
+
     def _descend_birth_ladder(self, binding_key: str, reason: str,
                               bare_prompt: str, options, session,
                               stream: str, topic: str, sender: str):
@@ -645,10 +663,11 @@ class AgentEngine:
         This is the case the bound-session retirement cannot reach: there
         is no session to retire, because the refused content arrived in the
         birth payload we just built. Rotating accounts is useless — every
-        account reads the same room — and retrying is useless too, since
-        the classifier is deterministic on a fixed payload (the distiller
-        put the same chunk up ~850 consecutive times over 2026-08-25..31
-        and was refused every time).
+        account reads the same room. Retrying is close to useless: well
+        over the line a refusal is flatly deterministic (the distiller put
+        one chunk up ~850 consecutive times over 2026-08-25..31 and was
+        refused every time), and at the margin it is a coin the room cannot
+        afford to keep flipping at 450k tokens a throw.
 
         So carry less of the room. Each rung is a different KIND of
         forgetting rather than a smaller amount of it, because the raw tail
@@ -661,8 +680,7 @@ class AgentEngine:
         process so the room does not pay a refused 450k-token prefill on
         every turn while that is waited for.
         """
-        start = BIRTH_LADDER.index(self._birth_rung.get(binding_key,
-                                                        BIRTH_FULL))
+        start = BIRTH_LADDER.index(self._remembered_rung(binding_key))
         for rung in BIRTH_LADDER[start + 1:]:
             logger.error(
                 f"Policy refusal in #{stream}>{topic} with no bound session "
@@ -681,7 +699,7 @@ class AgentEngine:
                 reason = self._refusal_reason
                 self._refusal_reason = None
                 continue
-            self._birth_rung[binding_key] = rung
+            self._birth_rung[binding_key] = (rung, time.time())
             logger.error(
                 f"#{stream}>{topic} is now running on birth rung {rung!r} — "
                 f"it has lost "
