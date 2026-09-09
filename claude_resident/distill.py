@@ -286,11 +286,21 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
         chars += len(text)
         end = i + 1
     if not chunk:
-        # Everything aged since the cursor was quarantined or unparseable.
-        # Still move the cursor, or the sweep re-walks it forever.
+        # Everything aged since the cursor is bounded or unparseable. Still
+        # move the cursor, or the sweep re-walks it forever — but SAY SO.
+        # This ran silently for a day under a fresh floor and the only
+        # evidence was a hits cursor that had moved with no digest to show
+        # for it: a hundred messages left the room's memory without a line
+        # in the log. A cut this size should never be quiet.
         if end > start:
             _write_hits(state, hits_rel, prev, prev.get("hits", ""), end,
                         log_rel)
+            logger.warning(
+                f"{log_rel}: lines {start}..{end} passed over undistilled — "
+                f"every message in them is under the room's load bound "
+                f"({bound!r}). They stay on disk; they will not be in the "
+                f"digest. Lower the bound and re-run scripts/"
+                f"redistill_eras.py if that is not what you meant.")
         return False
 
     try:
