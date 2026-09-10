@@ -261,10 +261,11 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
         return False
 
     # One bounded chunk per sweep; the cursor advances, later sweeps catch up.
-    # Quarantined messages are skipped rather than summarised: they are not
-    # loaded into the room, so they must not enter its memory by the back
-    # door either — and folding one back in would re-poison the digest that
-    # every cold start carries.
+    # QUARANTINED messages are skipped rather than summarised: folding one
+    # back in would walk it into every cold start through the digest, which
+    # is loaded with no floor in front of it. Floored messages are folded
+    # normally — a floor stops the raw transcript from loading, and the
+    # digest is exactly what makes that survivable.
     bound = state.load_bound(stream, topic)
     chunk = []          # (line index, msg_id, rendered text)
     chars = 0
@@ -275,7 +276,7 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
         except json.JSONDecodeError:
             end = i + 1
             continue
-        if bound.excludes(m.get("msg_id")):
+        if bound.quarantined(m.get("msg_id")):
             end = i + 1
             continue
         text = (f"[{m.get('ts', '')[:16]}] {m.get('sender', '?')}: "
@@ -286,21 +287,20 @@ def distill_topic(state, anthropic_client, log_rel: str) -> bool:
         chars += len(text)
         end = i + 1
     if not chunk:
-        # Everything aged since the cursor is bounded or unparseable. Still
-        # move the cursor, or the sweep re-walks it forever — but SAY SO.
-        # This ran silently for a day under a fresh floor and the only
-        # evidence was a hits cursor that had moved with no digest to show
-        # for it: a hundred messages left the room's memory without a line
-        # in the log. A cut this size should never be quiet.
+        # Everything aged since the cursor is quarantined or unparseable.
+        # Still move the cursor, or the sweep re-walks it forever — but SAY
+        # SO. The ancestor of this branch ran silently for a day and the
+        # only evidence was a hits cursor that had moved with no digest to
+        # show for it. A cut this size should never be quiet.
         if end > start:
             _write_hits(state, hits_rel, prev, prev.get("hits", ""), end,
                         log_rel)
             logger.warning(
-                f"{log_rel}: lines {start}..{end} passed over undistilled — "
-                f"every message in them is under the room's load bound "
-                f"({bound!r}). They stay on disk; they will not be in the "
-                f"digest. Lower the bound and re-run scripts/"
-                f"redistill_eras.py if that is not what you meant.")
+                f"{log_rel}: lines {start}..{end} passed over undistilled "
+                f"— every message in them is QUARANTINED ({bound!r}). They "
+                f"stay on disk; they will not be in the digest. Release the "
+                f"spans and re-run scripts/redistill_eras.py if that is not "
+                f"what you meant.")
         return False
 
     try:

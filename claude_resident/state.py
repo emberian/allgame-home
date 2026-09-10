@@ -70,6 +70,19 @@ class LoadBound:
     The floor is a guillotine and the quarantine is a scalpel. Reach for
     the scalpel; the floor exists for the day the whole arm is gangrenous.
 
+    They differ in one more place, and it is easy to get wrong: whether the
+    message may still be REMEMBERED. A floor says "stop loading the raw
+    transcript below here" — and the digest is the entire reason that is
+    survivable, so floored history must keep aging into it. A quarantine
+    says "the provider will not carry this", and summarising it would walk
+    it straight back into every cold start through the digest, which is
+    loaded with no floor in front of it.
+
+    So: excludes() governs LOADING and counts both. quarantined() governs
+    MEMORY and counts only the spans. Conflating them made a floor mean
+    amnesia rather than raw-to-digest, and passed 231 tavern messages over
+    undistilled in a day (2026-09-08).
+
     Neither deletes. Both bound what is LOADED, never what is stored.
     """
 
@@ -83,10 +96,21 @@ class LoadBound:
         return bool(self.floor or self.spans)
 
     def excludes(self, msg_id) -> bool:
+        """Not loaded into the room. Floor and spans both."""
         if msg_id is None:
             return False
         if self.floor and msg_id <= self.floor:
             return True
+        return self.quarantined(msg_id)
+
+    def quarantined(self, msg_id) -> bool:
+        """Not carried at all — not loaded, and not folded into memory.
+
+        Spans only. A floored message is still the room's past; it just
+        stops arriving verbatim.
+        """
+        if msg_id is None:
+            return False
         return any(lo <= msg_id <= hi for lo, hi in self.spans)
 
     def __repr__(self) -> str:
