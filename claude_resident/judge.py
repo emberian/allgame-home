@@ -189,6 +189,26 @@ class EngagementJudge:
             self.last_reason = "DM"
             return True
 
+        # MY TURN. Whose turn it is is a FACT, on the shared table, and it
+        # does not belong in a heuristic that reads chat lines. On
+        # 2026-09-22 the table said "UP NOW: Yuè月" and her judge declined
+        # the handoff with the reason "turn is Claude's per the table" —
+        # a confabulation, because the judge cannot see the table. The
+        # player who was up got gated out of her own turn and the game sat
+        # for eighteen minutes. Making the judge "smarter" would not fix
+        # that class of bug; reading the fact directly does.
+        topic_ = message.get("subject", "") or ""
+        if message.get("type") != "private":
+            try:
+                from claude_resident.tools import game_tools
+                game = game_tools.my_turn(stream, topic_, self.bot_name)
+            except Exception:
+                game = None
+            if game:
+                self.last_reason = (
+                    f"my move in {game.get('game')} (turn {game.get('turn')})")
+                return True
+
         # Bound reading topics are HIS rooms — everything said there gets
         # his attention. Frank never gates the reading room, so a bare 📖
         # (or any message) can never be silently judge-NO'd and dropped.
@@ -382,6 +402,11 @@ Say NO if ANY of these apply:
   to leave someone hanging. If it answers, questions, challenges, or builds on
   what he just said, that's YES regardless of how recently he talked.
 - The message is casual chatter that doesn't need Claude's input
+- The message is from a fellow bot resident (Yuè月, Gemma) and no human is
+  steering the exchange — two bots riffing can ping-pong a room to death.
+  YES only if it asks Claude something specific, advances a structured game
+  or task already in progress, or a human is clearly engaged in the thread;
+  otherwise let bot chatter settle
 - Someone is sharing something and the appropriate response is to just read it, not comment
 
 Call the `verdict` tool with your decision (YES/NO) and a brief reason.

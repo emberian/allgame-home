@@ -83,9 +83,67 @@ def _persistent_rooms(state) -> list[tuple[str, str]]:
     return rooms
 
 
+# How long the player who is up may sit on a turn before the harness wakes
+# them. The game used to advance only when a chat message happened to
+# arrive AND wake the right resident, so a quiet room stalled it outright —
+# on 2026-09-22 the table sat on "UP NOW: Yuè月" for eighteen minutes with
+# three healthy residents and nothing to prompt her. A turn-based game
+# cannot be parasitic on chat traffic; the table has to be able to speak.
+TURN_STALL_SECONDS = 8 * 60
+
+
+def maybe_take_turn(resident) -> bool:
+    """Wake this resident if the table says it is his move and it has sat."""
+    from glm_resident.tools import game_tools
+    try:
+        game = game_tools.stalled_turn(resident.judge.bot_name,
+                                       TURN_STALL_SECONDS)
+    except Exception as e:
+        logger.debug(f"turn clock check failed: {e}")
+        return False
+    if not game:
+        return False
+    room = game_tools.room_of(game) or ("", "")
+    stream, topic = room
+    if not stream:
+        return False
+    mins = int(game.get("_stalled_for", 0) // 60)
+    logger.info(f"Turn clock: {game.get('game')} has been on "
+                f"{game.get('current')} for {mins}m — taking the turn")
+    session = (resident.sessions.get(stream, topic)
+               or resident.sessions.create(stream, topic))
+    prompt = (
+        f"[HARNESS] The shared table says it is YOUR move in "
+        f"{game.get('game')} (turn {game.get('turn')}), and it has been for "
+        f"{mins} minutes with nothing happening. Nobody is going to prompt "
+        f"you — the room has moved on.\n\n"
+        f"Check game_status, make your move, record it with game_move, and "
+        f"say it in the room @-mentioning whoever is up next. If you are "
+        f"genuinely blocked — waiting on dice, a ruling, or a board that "
+        f"has not been restated — say THAT in the room instead, naming who "
+        f"you are waiting on. Either way the game moves; a silent turn is "
+        f"the one outcome that helps nobody.")
+    try:
+        game_tools.mark_nudged(game.get("game"))
+        resident.agent_engine.respond(
+            session, stream, topic, sender="",
+            trigger={"sender_full_name": "", "timestamp": time.time()},
+            content_blocks=[{"type": "text", "text": prompt}])
+    except Exception as e:
+        logger.warning(f"Turn-clock turn failed in #{stream}>{topic}: {e}")
+        return False
+    session.touch()
+    return True
+
+
 def maybe_run(resident, last_run: dict) -> bool:
     """Give him one quiet turn if a room has earned it. Returns True if so."""
     from glm_resident.util import human_gap
+
+    # A stalled game outranks solitude: one is the room having nothing to
+    # say, the other is three players waiting on you.
+    if maybe_take_turn(resident):
+        return True
 
     now = time.time()
     for stream, topic in _persistent_rooms(resident.state):

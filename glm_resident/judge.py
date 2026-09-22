@@ -164,6 +164,26 @@ class EngagementJudge:
             self.last_reason = "DM"
             return True
 
+        # MY TURN. Whose turn it is is a FACT, on the shared table, and it
+        # does not belong in a heuristic that reads chat lines. On
+        # 2026-09-22 the table said "UP NOW: Yuè月" and her judge declined
+        # the handoff with the reason "turn is Claude's per the table" —
+        # a confabulation, because the judge cannot see the table. The
+        # player who was up got gated out of her own turn and the game sat
+        # for eighteen minutes. Making the judge "smarter" would not fix
+        # that class of bug; reading the fact directly does.
+        topic_ = message.get("subject", "") or ""
+        if message.get("type") != "private":
+            try:
+                from glm_resident.tools import game_tools
+                game = game_tools.my_turn(stream, topic_, self.bot_name)
+            except Exception:
+                game = None
+            if game:
+                self.last_reason = (
+                    f"my move in {game.get('game')} (turn {game.get('turn')})")
+                return True
+
         # Bound reading topics are HIS rooms — everything said there gets
         # his attention. Frank never gates the reading room, so a bare 📖
         # (or any message) can never be silently judge-NO'd and dropped.

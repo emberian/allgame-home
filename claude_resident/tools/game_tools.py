@@ -235,6 +235,11 @@ def game_move(inp: dict, ctx) -> dict:
             turn += 1
         data["turn"] = turn
         data["current"] = resolved
+        # Bind the game to its room, so the harness can find it from a
+        # (stream, topic) without being told which game lives where.
+        data["stream"] = getattr(ctx, "stream", "") or data.get("stream", "")
+        data["topic"] = getattr(ctx, "topic", "") or data.get("topic", "")
+        data.pop("nudged_at", None)   # a real move clears the nudge debounce
         data["updated"] = datetime.now(timezone.utc).isoformat()
         _save(game, data)
 
@@ -303,3 +308,93 @@ def game_setup(inp: dict, ctx) -> dict:
     logger.info(f"game {game}: {verb.lower()} by "
                 f"{getattr(ctx, 'display_name', '?')}")
     return {"content": f"{verb} {game}.\n\n" + _render(data)}
+
+
+# --------------------------------------------------------------------------
+# Whose turn it is, as a FACT the harness can act on
+# --------------------------------------------------------------------------
+# The stall on 2026-09-22 that prompted this: the table said "UP NOW: Yuè月"
+# and her judge declined the handoff with the reason "turn is Claude's per
+# the table." The judge cannot read the table — it is a cheap gate over
+# recent chat lines — so that was a confabulation, and the player who was up
+# got gated out of her own turn. The game sat for eighteen minutes.
+#
+# The lesson is not "make the judge smarter." Whose turn it is is a FACT.
+# The judge answers a social question ("is this worth my attention"), and
+# routing a fact through a social heuristic will keep producing stalls in
+# new disguises. So the harness reads the fact directly, in two places:
+# when a message arrives (judge bypass) and on a timer (the turn clock,
+# because a silent room must not be able to stall a game either).
+
+def room_of(data: dict) -> tuple[str, str] | None:
+    """Where this game is played, if it has been seen in a room yet."""
+    st, tp = data.get("stream"), data.get("topic")
+    return (st, tp) if st and tp else None
+
+
+def my_turn(stream: str, topic: str, who: str) -> dict | None:
+    """The game in this room where `who` is up, or None.
+
+    Cheap and side-effect free: called on the message path, so it must not
+    cost anything when there is no game here.
+    """
+    if not SHARED_ROOT.exists():
+        return None
+    for path in SHARED_ROOT.glob("*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if room_of(data) != (stream, topic):
+            continue
+        if _fold(data.get("current") or "") == _fold(who):
+            return data
+    return None
+
+
+def stalled_turn(who: str, older_than: float) -> dict | None:
+    """A game where `who` is up and nothing has happened for a while.
+
+    This is the half that makes a game self-driving. Turn-taking used to
+    depend entirely on a chat message arriving AND waking the right
+    resident; if the room went quiet the game simply stopped, which is what
+    happened. Now the table itself can say "you are up and have been for a
+    while", with no traffic required.
+    """
+    if not SHARED_ROOT.exists():
+        return None
+    now = datetime.now(timezone.utc).timestamp()
+    for path in SHARED_ROOT.glob("*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not room_of(data):
+            continue
+        if _fold(data.get("current") or "") != _fold(who):
+            continue
+        log = data.get("log") or []
+        if not log:
+            continue
+        try:
+            last = datetime.fromisoformat(log[-1]["ts"]).timestamp()
+        except (ValueError, KeyError):
+            continue
+        if now - last < older_than:
+            continue
+        # Debounced in the file, not per process: three residents share this
+        # and a restart must not re-nudge.
+        if now - float(data.get("nudged_at") or 0) < older_than:
+            continue
+        data["_stalled_for"] = now - last
+        return data
+    return None
+
+
+def mark_nudged(game: str):
+    """Record that the current player has been woken, so we do not spam."""
+    with _locked(game):
+        data = _load(game)
+        if data:
+            data["nudged_at"] = datetime.now(timezone.utc).timestamp()
+            _save(game, data)

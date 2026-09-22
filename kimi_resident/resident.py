@@ -303,6 +303,19 @@ def should_respond(bot_name: str, sender: str,
         # of pinging each other every move must not become a license to
         # ping-pong the room to death.
 
+    # MY TURN — a fact from the shared table, not something to infer from
+    # chat. Her judge declined a handoff on 2026-09-22 with "turn is
+    # Claude's per the table" while the table said she was up; it cannot
+    # read the table, so that was invention. The game stalled eighteen
+    # minutes. Facts do not go through the social gate.
+    try:
+        from claude_resident.tools import game_tools
+        _game = game_tools.my_turn(stream, topic, bot_name)
+    except Exception:
+        _game = None
+    if _game:
+        return True, f"my move in {_game.get('game')} (turn {_game.get('turn')})"
+
     tier, bar = presence_tier(key)
     nbots = sum(1 for l in recent_lines[-8:]
                 if l.split("]:", 1)[0].lstrip("[").split()[0:1]
