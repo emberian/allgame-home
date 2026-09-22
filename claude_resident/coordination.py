@@ -225,10 +225,20 @@ def acquire(stream: str, topic: str, who: str,
 
 
 def renew(stream: str, topic: str, who: str) -> bool:
-    """Extend our lease. Called from the typing pulse; cheap and silent."""
+    """Extend our lease. False once we no longer hold it.
+
+    The `held` check is load-bearing and was missing. A released lease
+    KEEPS the holder's name (that is how the fairness history works), so
+    without it renew happily succeeded on a lease we had already dropped —
+    and since the typing pulse stops when renew returns False, the
+    indicator carried on through the whole bookkeeping tail of the turn.
+    Which is the bug Ember reported twice: "kimi typed for a while after
+    her message was finished being sent."
+    """
     with _locked(stream, topic):
         lease = _read(stream, topic)
-        if not lease or not _same(lease.get("who"), who):
+        if (not lease or not lease.get("held")
+                or not _same(lease.get("who"), who)):
             return False
         lease["at"] = time.time()
         _write(stream, topic, lease)
@@ -239,7 +249,12 @@ def release(stream: str, topic: str, who: str):
     """Give the floor back. Safe to call when we do not hold it."""
     with _locked(stream, topic):
         lease = _read(stream, topic)
-        if lease and _same(lease.get("who"), who):
+        # `held` matters here too: the send path releases when the message
+        # lands and the turn-end path releases again a few seconds later.
+        # Without this the second call "released" an already-free floor and
+        # logged a hold duration that included the bookkeeping — the exact
+        # number I was using to claim the bug was fixed.
+        if lease and lease.get("held") and _same(lease.get("who"), who):
             # Keep the record, drop the claim: the next acquire reads this
             # to know we just had it and should yield.
             held_for = time.time() - lease.get("taken_at", lease.get("at", 0))
