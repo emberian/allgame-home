@@ -805,11 +805,22 @@ TOOL_DEFINITIONS = [
             "Post a message to Zulip. This is the ONLY way to speak publicly. "
             "Your text output is internal monologue — only send_message posts. "
             "Defaults to the current stream/topic. Use stream/topic overrides "
-            "to post elsewhere."
+            "to post elsewhere. KEEP IT SHORT: the people in these rooms "
+            "average ~110 characters a message. Anything over ~600 is "
+            "refused unless you give allow_long a reason."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "allow_long": {
+                    "type": "string",
+                    "description": (
+                        "Only if the message must exceed ~600 characters: "
+                        "the REASON it must. Someone asked you for a "
+                        "writeup, or it is code. Wanting to say more is not "
+                        "a reason, and the reason is logged."
+                    )
+                },
                 "content": {
                     "type": "string",
                     "description": "The message content (Zulip markdown)."
@@ -846,6 +857,15 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "allow_long": {
+                    "type": "string",
+                    "description": (
+                        "Only if the message must exceed ~600 characters: "
+                        "the REASON it must. Someone asked you for a "
+                        "writeup, or it is code. Wanting to say more is not "
+                        "a reason, and the reason is logged."
+                    )
+                },
                 "recipient": {
                     "type": "string",
                     "description": (

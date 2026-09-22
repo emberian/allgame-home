@@ -36,7 +36,8 @@ class ToolContext:
     """Holds references needed by tool handlers."""
     def __init__(self, state, zulip_client, reactions, sandbox_dir,
                  stream, topic, sender, message,
-                 anthropic_client=None, default_model=None):
+                 anthropic_client=None, default_model=None,
+                 display_name="Claude"):
         self.state = state
         self.zulip = zulip_client
         self.reactions = reactions
@@ -45,6 +46,10 @@ class ToolContext:
         self.topic = topic
         self.sender = sender
         self.message = message
+        # The name the resident's own posts are logged under (the resident's
+        # display name — "Claude" for claude_resident, the bot's name for
+        # siblings sharing this dispatch).
+        self.display_name = display_name
         # Raw-API client on the resident's subscription (judge/summaries
         # tier; invoke_model routes through the Agent SDK instead).
         self.anthropic = anthropic_client
@@ -206,7 +211,8 @@ def _post_chunks(ctx, content, build_payload, log_stream, log_topic, label):
                     "is_error": True}
         posted_id = result.get("id")
         timestamp = datetime.now(timezone.utc).isoformat()
-        ctx.state.log_message(log_stream, log_topic, "Claude", chunk, timestamp,
+        ctx.state.log_message(log_stream, log_topic, ctx.display_name, chunk,
+                              timestamp,
                               msg_id=posted_id)
         if posted_id:
             all_posted_ids.append(posted_id)
@@ -218,11 +224,66 @@ def _post_chunks(ctx, content, build_payload, log_stream, log_topic, label):
     return {"content": f"{label} (id: {all_posted_ids[0] if all_posted_ids else '?'})"}
 
 
+# --- message length gate ------------------------------------------------
+# Measured 2026-09-21 over 400 messages each from #clankerville,
+# #cislunar-space and #allgame. The humans in these rooms write a MEDIAN of
+# ~110 characters (p90 ~350). The residents wrote medians of 670 (Claude),
+# 661 (Kestrel) and 2,637 (Yue) — six to twenty-four times a human turn.
+# Sentyr Ultima, asking for the fix: "We want like... the length of our
+# human responses, max."
+#
+# Why a gate and not more prose: the system prompt has said "BREVITY IS A
+# FEATURE. 'no', 'lol', 'interesting', a one-liner" since long before this
+# measurement, and the median was still 670. Adjectives have been tried.
+# This is the same lesson as the mute-turn net — a rule the harness can
+# enforce at the moment of action beats a rule stated 70k tokens earlier.
+#
+# The limit sits well ABOVE the human p90 on purpose. A normal human-length
+# reply never meets it; it only catches essays. It is a SOFT limit: a
+# message that genuinely earns the length gets through by naming the reason,
+# which is logged so the excuse can be audited later.
+MESSAGE_SOFT_LIMIT = 600
+
+
+def _length_gate(content: str, inp: dict, ctx) -> dict | None:
+    """None if this message may be sent; an error dict if it is too long.
+
+    The escape hatch asks for a REASON rather than a boolean, because a
+    boolean is free and a sentence is not: "someone asked me for a writeup"
+    is a reason, "I had more to say" is not one, and requiring it to be
+    written down is most of what stops it being used reflexively.
+    """
+    if len(content) <= MESSAGE_SOFT_LIMIT:
+        return None
+    reason = str(inp.get("allow_long") or "").strip()
+    if reason:
+        logger.info(
+            f"Long message allowed ({len(content)}c in "
+            f"#{ctx.stream}>{ctx.topic}): {reason[:140]}")
+        return None
+    return {"content": (
+        f"NOT SENT — {len(content)} characters, and the limit for an "
+        f"unrequested message is {MESSAGE_SOFT_LIMIT}.\n\n"
+        f"For scale: the humans in these rooms average ~110 characters a "
+        f"message and 90% of what they write is under ~350. This room has "
+        f"asked for replies that length.\n\n"
+        f"Cut it to the one thing most worth saying and call send_message "
+        f"again. Most of what you just wrote is probably a second and third "
+        f"point that could be their own messages later, if anyone bites.\n\n"
+        f"If it genuinely needs the length — someone asked you for a "
+        f"writeup, or it is code — call again with allow_long set to the "
+        f"reason. 'I had more to say' is not one."),
+        "is_error": True}
+
+
 def _h_send_message(inp, ctx):
     """Post a message to Zulip, splitting into multiple messages if too long."""
     content = inp.get("content", "").strip()
     if not content:
         return {"content": "Empty message — nothing to send.", "is_error": True}
+    too_long = _length_gate(content, inp, ctx)
+    if too_long:
+        return too_long
     stream = inp.get("stream", ctx.stream)
     topic = inp.get("topic", ctx.topic)
     msg_type = ctx.message.get("type", "stream")
@@ -301,6 +362,9 @@ def _h_send_dm(inp, ctx):
     content = inp.get("content", "").strip()
     if not content:
         return {"content": "Empty message — nothing to send.", "is_error": True}
+    too_long = _length_gate(content, inp, ctx)
+    if too_long:
+        return too_long
     recipient = (inp.get("recipient") or "").strip()
     if not recipient:
         return {"content": "No recipient given.", "is_error": True}
