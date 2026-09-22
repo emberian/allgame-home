@@ -65,6 +65,7 @@ import time
 import fcntl
 import random
 import logging
+import unicodedata
 from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -84,6 +85,24 @@ FLOOR_TTL = 45.0
 BACKOFF_BASE = 1.2          # seconds of pure jitter, everyone pays this
 RECENT_SPEAKER_PENALTY = 4.0    # extra, scaled by your SHARE of recent holds
 HISTORY = 6                 # how many recent holders the room remembers
+
+
+def _same(a: str | None, b: str | None) -> bool:
+    """Identity comparison that survives the harnesses disagreeing on case.
+
+    The floor is acquired with the resident's judge name (lowercased in
+    claude_resident: "claude") and released from the tool layer with its
+    display name ("Claude"), and Yue is "Yue" to her tool layer and
+    "Yuè月" to the room. A strict == meant a resident could not release
+    its own lease, which is worse than never taking one.
+    """
+    if not a or not b:
+        return False
+    fa = unicodedata.normalize("NFKD", a).casefold()
+    fb = unicodedata.normalize("NFKD", b).casefold()
+    fa = "".join(c for c in fa if ord(c) < 128) or fa
+    fb = "".join(c for c in fb if ord(c) < 128) or fb
+    return fa.strip() == fb.strip()
 
 
 def _key(stream: str, topic: str) -> str:
@@ -184,7 +203,8 @@ def acquire(stream: str, topic: str, who: str,
     if spoke_ago is None:
         prev = _read(stream, topic) or {}
         recent = prev.get("recent") or []
-        share = (recent.count(who) / len(recent)) if recent else 0.0
+        mine = sum(1 for r in recent if _same(r, who))
+        share = (mine / len(recent)) if recent else 0.0
     else:
         # Explicit override, kept for tests and for callers with a better
         # idea of their own recency than the room has.
@@ -192,7 +212,7 @@ def acquire(stream: str, topic: str, who: str,
     time.sleep(backoff_for(share))
     with _locked(stream, topic):
         lease = _read(stream, topic)
-        if _live(lease) and lease.get("who") != who:
+        if _live(lease) and not _same(lease.get("who"), who):
             return False, lease
         recent = (lease or {}).get("recent") or []
         mine = {"who": who, "at": time.time(), "held": True,
@@ -207,7 +227,7 @@ def renew(stream: str, topic: str, who: str) -> bool:
     """Extend our lease. Called from the typing pulse; cheap and silent."""
     with _locked(stream, topic):
         lease = _read(stream, topic)
-        if not lease or lease.get("who") != who:
+        if not lease or not _same(lease.get("who"), who):
             return False
         lease["at"] = time.time()
         _write(stream, topic, lease)
@@ -218,7 +238,7 @@ def release(stream: str, topic: str, who: str):
     """Give the floor back. Safe to call when we do not hold it."""
     with _locked(stream, topic):
         lease = _read(stream, topic)
-        if lease and lease.get("who") == who:
+        if lease and _same(lease.get("who"), who):
             # Keep the record, drop the claim: the next acquire reads this
             # to know we just had it and should yield.
             lease["held"] = False

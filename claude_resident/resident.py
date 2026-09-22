@@ -569,8 +569,14 @@ class ClaudeResident:
                 # typing indicator alive: one loop, one liveness signal. If
                 # this process dies the pulse stops and the lease expires,
                 # so nothing has to clean up after a crash.
-                if floor_holder:
-                    coordination.renew(stream, topic, floor_holder)
+                if floor_holder and not coordination.renew(
+                        stream, topic, floor_holder):
+                    # The floor went away — which happens the moment the
+                    # message actually lands (see tools/dispatch). "Typing"
+                    # should mean "composing", so stop claiming it the
+                    # instant we have spoken, instead of pulsing through
+                    # whatever bookkeeping the turn does afterwards.
+                    break
                 if time.time() > deadline:
                     self.logger.warning(
                         f"Typing indicator for #{stream}>{topic} hit its "

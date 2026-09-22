@@ -5,6 +5,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from claude_resident import coordination
 from claude_resident.tools import (
     game_tools,
     state_tools,
@@ -219,6 +220,20 @@ def _post_chunks(ctx, content, build_payload, log_stream, log_topic, label):
         if posted_id:
             all_posted_ids.append(posted_id)
             ctx.posted_ids.append(posted_id)
+
+    # The floor is for COMPOSING, and composing is over: the room has heard
+    # us. Releasing here rather than at turn-end matters because a turn
+    # keeps running after send_message — state writes, notes, a game_move —
+    # and on 2026-09-22 Yue held the floor for 27 seconds after her message
+    # had already landed, with the typing indicator still on, while Claude
+    # and Kestrel stood down five times waiting for a reply that was
+    # already in the room.
+    #
+    # Safe if we never held it: release() only acts on a lease that is ours.
+    try:
+        coordination.release(ctx.stream, ctx.topic, ctx.display_name)
+    except Exception:
+        pass    # never fail a delivered message over bookkeeping
 
     if len(chunks) > 1:
         ids = ", ".join(str(i) for i in all_posted_ids)

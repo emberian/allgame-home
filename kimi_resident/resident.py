@@ -468,8 +468,12 @@ def _keep_typing_alive(zulip_client, stream_id, topic, stop,
     same heartbeat: one loop, one liveness signal, and a crash frees the
     room automatically instead of needing a reaper."""
     while not stop.wait(10):
-        if floor:
-            coordination.renew(floor[0], floor[1], floor[2])
+        if floor and not coordination.renew(floor[0], floor[1], floor[2]):
+            # Floor released — the message has landed (tools/dispatch drops
+            # it on post). Stop showing "typing" through the state-writing
+            # tail of the turn; that is what had the room waiting on a
+            # reply that was already there.
+            break
         try:
             zulip_client.set_typing_status({
                 "op": "start", "type": "stream",
