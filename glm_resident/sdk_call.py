@@ -16,7 +16,7 @@ plan he does. No tools, no session, no state: one prompt in, text out.
 import asyncio
 import logging
 
-from glm_resident.config import AGENT_SDK_CONFIG_DIR, MODEL_IDS
+from glm_resident.config import AGENT_SDK_CONFIG_DIR, MODEL_IDS, EFFORT
 from glm_resident.util import is_policy_refusal
 
 logger = logging.getLogger("sdk_call")
@@ -42,7 +42,7 @@ class PolicyRefusal(RuntimeError):
 
 
 async def _run(prompt: str, system: str, model: str, max_turns: int,
-               seen: dict | None = None) -> str:
+               seen: dict | None = None, effort: str | None = None) -> str:
     from claude_agent_sdk import (ClaudeAgentOptions, AssistantMessage,
                                   ResultMessage, query)
     from glm_resident.auth import sdk_env
@@ -56,6 +56,12 @@ async def _run(prompt: str, system: str, model: str, max_turns: int,
         setting_sources=[],             # never inherit the host's CLAUDE.md
         cwd=str(AGENT_SDK_CONFIG_DIR),
         max_buffer_size=32_000_000,
+        # The judge runs on EVERY ambient message and wants nothing but a
+        # verdict; on default effort glm-5.3-flash deliberated its way
+        # through hundreds of characters to say YES. Callers can pass a
+        # higher effort for work that earns it — the distiller is the
+        # likeliest, since its era volumes are never recompressed.
+        **({"effort": effort or EFFORT} if (effort or EFFORT) else {}),
         env={
             **sdk_env(model),
             "CLAUDE_CONFIG_DIR": str(AGENT_SDK_CONFIG_DIR),
@@ -86,23 +92,33 @@ async def _run(prompt: str, system: str, model: str, max_turns: int,
 
 
 def complete(prompt: str, system: str = "", model: str | None = None,
-             max_turns: int = 1, big_context: bool = False) -> str:
+             max_turns: int = 1, big_context: bool = False,
+             effort: str | None = None) -> str:
     """Run one completion on plan limits. Raises on failure.
 
     Safe to call from the harness's background threads (reaper, distiller)
     and from the event loop — each call is its own subprocess and no event
     loop is running in those threads.
     """
-    chosen = model or MODEL_IDS["sonnet"]
-    if big_context and not chosen.endswith("[1m]"):
-        # A whole era of chat can exceed the 200k default window.
-        chosen += "[1m]"
+    # MODEL_IDS["sonnet"] in the parent — a key this fork does not have, so
+    # the default was a KeyError waiting for the first caller who omitted
+    # `model`. All three current callers pass one explicitly, which is why
+    # it sat here unnoticed.
+    chosen = model or MODEL_IDS["flash"]
+    if big_context:
+        # The parent appends "[1m]" here to reach Anthropic's long-context
+        # variant. That suffix is Anthropic-specific and Z.AI would reject
+        # "glm-5.3-flash[1m]" as an unknown model. No suffix is needed:
+        # glm-5.3-flash took a 600k-token request as-is (measured
+        # 2026-09-21), so a whole era of chat already fits.
+        pass
     # The holder must outlive the event loop: the exception carrying a
     # refusal can land at asyncio.run() teardown, by which point anything
     # local to the coroutine is gone.
     seen: dict = {}
     try:
-        return asyncio.run(_run(prompt, system, chosen, max_turns, seen))
+        return asyncio.run(
+            _run(prompt, system, chosen, max_turns, seen, effort))
     except PolicyRefusal:
         raise
     except Exception as e:

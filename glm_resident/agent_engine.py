@@ -56,6 +56,7 @@ from claude_agent_sdk import (
 from glm_resident.auth import sdk_env
 from glm_resident import scry
 from glm_resident.config import (
+    EFFORT,
     AGENT_SDK_MODEL,
     AGENT_SDK_FALLBACK_MODEL,
     PERSISTENT_SESSION_MAX_TOKENS,
@@ -482,8 +483,11 @@ class AgentEngine:
             # different model would answer the room in another voice.
             **({"fallback_model": AGENT_SDK_FALLBACK_MODEL}
                if AGENT_SDK_FALLBACK_MODEL else {}),
-            # thinking omitted: the CLI defaults to adaptive on Opus, and
-            # sdk 0.2.126's transport chokes on the dataclass form.
+            # `thinking=` is still off-limits: the SDK transport dies on
+            # the dataclass form with KeyError: 'type' (re-confirmed on
+            # 0.2.128, 2026-09-21). `effort` is the lever that works — see
+            # config.EFFORT for the measurements behind this value.
+            **({"effort": EFFORT} if EFFORT else {}),
             max_turns=MAX_TOOL_TURNS,
             mcp_servers={"resident": self._server, **self._scry_servers},
             tools=[],  # no Claude Code host tools — his jailed surface only

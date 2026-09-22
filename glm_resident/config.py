@@ -233,23 +233,52 @@ AGENT_SDK_MODEL = MODEL_IDS["flash"]
 # DIFFERENT model would silently answer the room in another voice.
 # None keeps failures loud.
 AGENT_SDK_FALLBACK_MODEL = None
-# EFFORT: deliberately NOT set. Read this before adding it back.
+# EFFORT — set to "medium", against the parent's advice, because the parent
+# was reasoning about a different model.
 #
-# `effort` is not a thinking-budget knob — it's a single dial over how much
-# the model spends per turn overall: thinking depth, yes, but also tool-call
-# behavior (lower = fewer, more-consolidated calls), preamble, and terseness.
-# Omitting it means "the model's own default", which for Opus 4.6 is `high`
-# — the setting Anthropic's own docs call the sweet spot.
+# claude_resident deliberately leaves this unset: Opus 4.6 defaults to
+# `high`, which is the sweet spot, so setting it bought nothing and dropping
+# to `medium` would have been a quiet downgrade whose main visible effect is
+# fewer tool calls — less checking and fetching, which is what "tired" looks
+# like from outside. Every word of that is true of Opus and none of it
+# survived contact with glm-5.3-flash.
 #
-# So the resident was ALREADY running high before 2026-07-29; setting it
-# explicitly bought nothing measurable (the per-turn cost win that night came
-# entirely from session sleep, not effort), and dropping chat rooms to
-# `medium` would have been a quiet downgrade whose main visible effect is
-# fewer tool calls — i.e. less checking and fetching, which is precisely what
-# "tired" looks like from the outside.
+# What Kestrel actually did on default effort, measured from his own
+# api_archive over his first five messages (2026-09-21): 119,690 characters
+# of thinking (~30k tokens) to produce 6,468 characters of speech. A ratio
+# of 18.5 to 1. Individual turns spent 27,595 and 24,573 characters of
+# thinking on ONE message each, and a single reply in #clankerville>theology
+# took four and a half minutes.
 #
-# If a room ever genuinely wants more than default (the reading room at
-# `xhigh`, say), add it there deliberately and measure.
+# Measured, same prompt, glm-5.3-flash:
+#
+#                     thinking          tools called   latency
+#   default        155c / 825c              yes         10-15s
+#   medium          13c /   0c              yes          6-10s
+#   low              0c /   0c              yes          6-10s
+#
+# Two things that matters for. First, the parent's specific fear does not
+# reproduce: tool use survives at both medium and low, on a prompt written
+# to require a lookup. Second, GLM is near-BINARY here — anything below its
+# default reads as "thinking off", so medium and low are barely
+# distinguishable. That is why there is one knob and not one per lane: a
+# separate floor for the judge would be a distinction the model does not
+# actually make.
+#
+# `medium` rather than `low` because it takes the whole reduction while
+# leaving somewhere to go, and because the one difference visible in the
+# sample favored it (medium kept a tool call low dropped).
+#
+# Escape hatch, in preference order, if he starts reading as blunt or
+# incurious: raise this to "high"; or pass effort= at a specific sdk_call
+# site (the distiller is the likeliest one to want more — it writes era
+# volumes that are never recompressed); or set it per-room in agent_engine.
+# Do not reach for ThinkingConfigDisabled/Enabled instead: the Agent SDK
+# transport still dies on the dataclass form with KeyError: 'type' as of
+# sdk 0.2.128, which is the bug the parent's "thinking omitted" note in
+# agent_engine refers to. MAX_THINKING_TOKENS is honored but only softly —
+# a budget of 128 still produced 1,748 characters.
+EFFORT = "medium"
 
 # SOLITUDE. Every turn he takes is a reply to somebody — there is no moment
 # when nobody is talking to him. His journal shows the cost: 18 entries in
