@@ -152,6 +152,26 @@ def _live(lease: dict | None) -> bool:
             and (time.time() - lease.get("at", 0)) < FLOOR_TTL)
 
 
+
+# Append-only record of floor holds, readable no matter which process (or
+# subprocess) released the lease:
+#   jq -r '"\(.held_for)s \(.who) #\(.stream)>\(.topic)"' ~/tavern_table/floor_log.jsonl
+FLOOR_LOG = "floor_log.jsonl"
+
+
+def _record(stream: str, topic: str, who: str, held_for: float):
+    try:
+        FLOOR_DIR.mkdir(parents=True, exist_ok=True)
+        with open(FLOOR_DIR / FLOOR_LOG, "a") as fh:
+            fh.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "stream": stream, "topic": topic, "who": who,
+                "held_for": round(held_for, 1),
+            }) + "\n")
+    except Exception:
+        pass    # bookkeeping must never break a turn
+
+
 def holder(stream: str, topic: str) -> dict | None:
     """Who holds the floor here, or None. Expired leases read as free."""
     lease = _read(stream, topic)
@@ -269,3 +289,12 @@ def release(stream: str, topic: str, who: str):
             logger.info(
                 f"Floor released in #{stream}>{topic} by {who} "
                 f"after {held_for:.0f}s")
+            # Durable, because the logger is not enough for one of the three.
+            # Yue's tools run in kimi_resident/mcp_server.py, a subprocess
+            # whose stderr the kimi CLI swallows — and the release happens in
+            # the tool layer, so every one of HER holds left no trace at all.
+            # She held the floor 8 times on 2026-09-22 with zero lines in her
+            # log, which is precisely the resident and precisely the metric
+            # this whole chain of bugs was about. Same hole that hid the
+            # length gate's override reasons; same fix.
+            _record(stream, topic, who, held_for)
