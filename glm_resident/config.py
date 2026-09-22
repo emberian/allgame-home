@@ -29,23 +29,35 @@ DEFAULT_STATE_DIR = Path.home() / "glm_state"
 ZAI_KEY_FILE = Path.home() / ".zai-key"
 ZAI_BASE_URL = "https://api.z.ai/api/anthropic"
 
-# Exact Z.AI model ids (verified against GET /api/paas/v4/models on
-# 2026-09-21). Single source for every model-naming consumer: DEFAULT_MODEL,
-# the judge, session summaries, the distiller.
+# Exact Z.AI model ids, each one ENTITLEMENT-CHECKED by actually calling it
+# on this key (2026-09-21), not merely read off GET /api/paas/v4/models.
+# That distinction cost an hour: the models endpoint cheerfully lists
+# glm-5.3-flashx, and calling it returns
+#   [1311] Your current subscription plan does not yet include access
+# so `flashx` was set as the judge model and every ambient message hit a
+# gate that could not run. Worse, the failure was nearly unreadable through
+# the Agent SDK: instead of surfacing the 1311, the CLI retried its way to a
+# THREE MINUTE hang and then reported "Claude Code returned an error
+# result: success". The judge fails open by design, so the only visible
+# symptom was Kestrel taking three minutes to answer anything.
+#
+# Verified callable on this key: glm-5.3, glm-5.3-flash, glm-5, glm-4.6.
+# Verified NOT callable: glm-5.3-flashx.
 #
 # The `flash` tier is the point of this resident — cheap enough to leave
-# running ambiently all day. `flashx` is cheaper still and serves the
-# sidecars; `glm-5.3` is the full model, kept named but unused so that
-# promoting a lane to it is a one-line change rather than a guess.
+# running ambiently all day. `glm-5.3` is the full model, kept named but
+# unused so promoting a lane to it is a one-line change rather than a guess.
+# If a cheaper tier ever gets added to the plan, call it once before
+# wiring it to anything.
 MODEL_IDS = {
     "full": "glm-5.3",
     "flash": "glm-5.3-flash",
-    "flashx": "glm-5.3-flashx",
 }
 DEFAULT_MODEL = MODEL_IDS["flash"]
-# The judge is a cost gate that runs on EVERY ambient message — the one
-# place where the cheapest tier is the right tier.
-JUDGE_MODEL = MODEL_IDS["flashx"]
+# The judge is a cost gate that runs on EVERY ambient message, so it wants
+# the cheapest tier the plan actually serves — which is `flash`, the same
+# model as the main turns.
+JUDGE_MODEL = MODEL_IDS["flash"]
 
 # Beta headers on the raw client. Z.AI accepts and ignores the ones it does
 # not implement, so this is inherited as-is rather than pruned: an ignored
@@ -282,7 +294,7 @@ READING_SESSIONS_FILE = "books/reading_sessions.json"
 # loaded as <topic_memory> on cold starts. Logs stay raw forever; the
 # hits are a regenerable reading of them, not a replacement.
 DISTILL_MODEL = MODEL_IDS["flash"]  # era volumes are sealed forever —
-                                    # cheaper than flashx-quality regret
+                                    # do not economize on the reading
 DISTILL_RAW_KEEP = 200        # newest N messages stay raw / undistilled
 DISTILL_MIN_BATCH = 100       # sweep a topic once this many msgs age out
 DISTILL_INTERVAL = 600        # seconds between distiller sweeps
