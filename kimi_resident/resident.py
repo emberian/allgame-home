@@ -19,6 +19,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from claude_resident import coordination
 from kimi_resident import config
 from claude_resident import scry
 from kimi_resident.engine import KimiEngine
@@ -457,11 +458,18 @@ def _wait_for_typers(key: str):
         time.sleep(1)
 
 
-def _keep_typing_alive(zulip_client, stream_id, topic, stop):
+def _keep_typing_alive(zulip_client, stream_id, topic, stop,
+                       floor=None):
     """Zulip expires typing indicators server-side after ~15s — re-send
     'start' every 10s for the life of the turn, or the room watches her
-    'stop typing' a minute before her message lands."""
+    'stop typing' a minute before her message lands.
+
+    Also renews the floor lease (see claude_resident.coordination) on the
+    same heartbeat: one loop, one liveness signal, and a crash frees the
+    room automatically instead of needing a reaper."""
     while not stop.wait(10):
+        if floor:
+            coordination.renew(floor[0], floor[1], floor[2])
         try:
             zulip_client.set_typing_status({
                 "op": "start", "type": "stream",
@@ -812,6 +820,22 @@ def run(args):
                     if msg_type == "stream":
                         _wait_for_typers(key)
 
+                    # --- The floor: one resident composing per room. She
+                    # shares the lease files with Claude and Kestrel, so
+                    # whichever of the three commits first here speaks and
+                    # the others stand down instead of piling a second full
+                    # answer onto the same question. ---
+                    got_floor, held_by = (True, None)
+                    if msg_type == "stream":
+                        got_floor, held_by = coordination.acquire(
+                            stream, topic, bot_name, trigger_id=msg.get("id"))
+                    if not got_floor:
+                        logger.info(
+                            "Floor in %s held by %s — standing down", key,
+                            (held_by or {}).get("who"))
+                        handled.mark(msg.get("id"))
+                        continue
+
                     sid = stream_id_map.get(stream.lower())
                     typing_stop = None
                     if sid and msg_type == "stream":
@@ -822,19 +846,26 @@ def run(args):
                             typing_stop = threading.Event()
                             threading.Thread(
                                 target=_keep_typing_alive,
-                                args=(zulip_client, sid, topic, typing_stop),
+                                args=(zulip_client, sid, topic, typing_stop,
+                                      (stream, topic, bot_name)),
                                 daemon=True).start()
                         except Exception:
                             pass
 
                     logger.info("Responding to %s in %s", sender, key)
-                    prompt = build_turn_prompt(
-                        state, engine, key, stream, topic, sender, content,
-                        engine.model)
-                    text, posted = engine.respond(
-                        key, prompt, stream=stream, topic=topic,
-                        sender=sender, msg_type=msg_type,
-                        sender_email=sender_email, msg_id=msg.get("id"))
+                    try:
+                        prompt = build_turn_prompt(
+                            state, engine, key, stream, topic, sender, content,
+                            engine.model)
+                        text, posted = engine.respond(
+                            key, prompt, stream=stream, topic=topic,
+                            sender=sender, msg_type=msg_type,
+                            sender_email=sender_email, msg_id=msg.get("id"))
+                    finally:
+                        # Every path, including a raised turn: the TTL is a
+                        # crash backstop, not how a turn normally ends.
+                        if msg_type == "stream":
+                            coordination.release(stream, topic, bot_name)
 
                     if typing_stop is not None:
                         typing_stop.set()

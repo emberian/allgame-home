@@ -17,6 +17,7 @@ from glm_resident.config import (
     CACHE_TTL, BURST_SWEEP_ROUNDS, BURST_SWEEP_INTERVAL,
     INTERIM_MESSAGES_MAX_CHARS,
 )
+from glm_resident import coordination
 from glm_resident.state import StateManager
 from glm_resident.sessions import SessionManager
 from glm_resident.judge import EngagementJudge
@@ -197,13 +198,39 @@ class GLMResident:
             # etc). Gives the human a beat to see their own message land. ---
             time.sleep(COOLDOWN_SECONDS)
 
+            # --- The floor: at most one resident composing here at a time.
+            # Measured 2026-09-22: 36% of the 445 turns the three residents
+            # took that day had another resident ALREADY composing in the
+            # same room within 30s — sometimes all three at once. That is
+            # what "each one gets much longer responses the more models are
+            # there" actually is: not longer answers, parallel ones.
+            #
+            # Taken here, after the judge has committed but before the
+            # expensive part, so a resident that loses stands down without
+            # spending a turn. It is released in the `finally` below and
+            # renewed by the typing pulse, so a crash frees it in
+            # FLOOR_TTL rather than muting the room. ---
+            floor_me = bot_name
+            got_floor, held_by = coordination.acquire(
+                stream, topic, floor_me,
+                trigger_id=trigger.get("id"))
+            if not got_floor:
+                self.logger.info(
+                    f"Floor in #{stream}>{topic} held by "
+                    f"{(held_by or {}).get('who')} — standing down "
+                    f"(they are answering {(held_by or {}).get('trigger')})")
+                for m in batch:
+                    self.handled.mark(m.get("id"))
+                return
+
             # The judge has committed us to replying, so start the indicator
             # HERE rather than just before the API call. Everything below —
             # the typing hold-off, the burst sweep, session lookup, state
             # fingerprinting and the whole prompt build — used to happen in
             # silence, so the room saw nothing for seconds and then a sudden
             # reply.
-            typing_stop = self._start_typing(stream, topic)
+            typing_stop = self._start_typing(stream, topic,
+                                             floor_holder=floor_me)
 
             # --- Typing hold-off: wait if someone is actively typing ---
             self._wait_for_typing(stream, topic)
@@ -418,6 +445,11 @@ class GLMResident:
             return
         finally:
             typing_stop.set()   # the pulse thread sends the stop
+            # Give the floor back on EVERY path, including the exception
+            # one above. Without this the room stays blocked until the
+            # lease expires — the TTL is a crash backstop, not the normal
+            # way a turn ends.
+            coordination.release(stream, topic, floor_me)
 
         # The response turn completed (posted or deliberate silence) — record
         # every batched message as handled so a restart never replays them.
@@ -517,7 +549,8 @@ class GLMResident:
     # ------------------------------------------------------------------
 
     def _start_typing(self, stream: str, topic: str,
-                      max_seconds: float = 300.0) -> threading.Event:
+                      max_seconds: float = 300.0,
+                      floor_holder: str | None = None) -> threading.Event:
         """Show the typing indicator and keep it alive until stopped.
 
         Zulip expires an indicator ~15s after the last start event, so it
@@ -531,6 +564,12 @@ class GLMResident:
 
         def _pulse():
             while not stop.wait(10):
+                # Renew the floor lease on the same heartbeat that keeps the
+                # typing indicator alive: one loop, one liveness signal. If
+                # this process dies the pulse stops and the lease expires,
+                # so nothing has to clean up after a crash.
+                if floor_holder:
+                    coordination.renew(stream, topic, floor_holder)
                 if time.time() > deadline:
                     self.logger.warning(
                         f"Typing indicator for #{stream}>{topic} hit its "
