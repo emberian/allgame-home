@@ -249,9 +249,16 @@ class GLMResident:
                         f"Swept {len(new)} stacked message(s) into the turn")
                     time.sleep(BURST_SWEEP_INTERVAL)
 
+        # Log WHY, not just that. Engagement has several bypass paths (DM,
+        # direct mention, bound reading room, "my move on the table") and
+        # until now only the SKIP path recorded its reason — so when a turn
+        # happened there was no way to tell which rule granted it. That gap
+        # cost real time today: after wiring the turn bypass there was no
+        # way to confirm it had ever fired.
         self.logger.info(
             f"Responding to {sender} in #{stream}>{topic}"
-            + (f" ({len(batch)} messages batched)" if len(batch) > 1 else ""))
+            + (f" ({len(batch)} messages batched)" if len(batch) > 1 else "")
+            + f" [{getattr(self.judge, 'last_reason', '?')}]")
 
         # --- Session lookup ---
         session = self.sessions.get(stream, topic)

@@ -889,7 +889,12 @@ def run(args):
                         except Exception:
                             pass
 
-                    logger.info("Responding to %s in %s", sender, key)
+                    # Log WHY she engaged, not just that she did. Only the
+                    # skip path recorded a reason, so after wiring the
+                    # turn bypass there was no way to see whether it had
+                    # ever granted her a turn.
+                    logger.info("Responding to %s in %s [%s]",
+                                sender, key, reason)
                     try:
                         prompt = build_turn_prompt(
                             state, engine, key, stream, topic, sender, content,
