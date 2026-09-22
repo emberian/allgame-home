@@ -261,6 +261,9 @@ def _length_gate(content: str, inp: dict, ctx) -> dict | None:
             f"Long message allowed ({len(content)}c in "
             f"#{ctx.stream}>{ctx.topic}): {reason[:140]}")
         return None
+    logger.info(
+        f"Length gate REFUSED a {len(content)}c message in "
+        f"#{ctx.stream}>{ctx.topic} (limit {MESSAGE_SOFT_LIMIT})")
     return {"content": (
         f"NOT SENT — {len(content)} characters, and the limit for an "
         f"unrequested message is {MESSAGE_SOFT_LIMIT}.\n\n"
