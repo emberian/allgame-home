@@ -404,6 +404,8 @@ TOOL_SUBSET = [
     # state
     "read_state_file", "write_state_file", "edit_state_file",
     "list_state_files", "glob_state_files", "grep_state", "note_crosstopic",
+    # the shared table (turn-taking across residents)
+    "game_status", "game_move", "game_setup",
     # comms
     "send_message", "send_dm", "add_reaction", "send_sysadmin_message",
     # search

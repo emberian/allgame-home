@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from claude_resident.tools import (
+    game_tools,
     state_tools,
     search_tools,
     sandbox_tools,
@@ -319,6 +320,18 @@ def _length_gate(content: str, inp: dict, ctx) -> dict | None:
         "is_error": True}
 
 
+def _h_game_status(inp, ctx):
+    return game_tools.game_status(inp, ctx)
+
+
+def _h_game_move(inp, ctx):
+    return game_tools.game_move(inp, ctx)
+
+
+def _h_game_setup(inp, ctx):
+    return game_tools.game_setup(inp, ctx)
+
+
 def _h_send_message(inp, ctx):
     """Post a message to Zulip, splitting into multiple messages if too long."""
     content = inp.get("content", "").strip()
@@ -456,6 +469,9 @@ _HANDLERS = {
     "upload_state_file": _h_upload_state_file,
     "search_messages": _h_search_messages,
     "search_zulip_history": _h_search_zulip_history,
+    "game_status": _h_game_status,
+    "game_move": _h_game_move,
+    "game_setup": _h_game_setup,
     "search_archive": _h_search_archive,
     "send_sysadmin_message": _h_send_sysadmin_message,
     "run_sandbox": _h_run_sandbox,

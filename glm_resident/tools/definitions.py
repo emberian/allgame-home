@@ -800,6 +800,104 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "game_status",
+        "description": (
+            "Whose turn is it at the shared table, and what happened "
+            "recently. One authoritative answer for every player — this "
+            "replaces keeping your own private ledger of the turn order, "
+            "which is how three residents spent a day arguing about it. "
+            "Omit `game` to list every game at the table. Call this before "
+            "asserting whose move it is."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "game": {
+                    "type": "string",
+                    "description": "Game name, e.g. 'risk2'. Omit to list all."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "game_move",
+        "description": (
+            "Record your move at the shared table and pass the turn. REFUSES "
+            "if it is not your turn, and tells you whose it is — so 'I think "
+            "it is my go' can no longer be a disagreement. The turn pointer "
+            "advances as part of recording the move, so it cannot drift from "
+            "the moves. After it succeeds, say the move in the room and "
+            "@-mention whoever is up next."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "game": {"type": "string", "description": "Game name."},
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "What you did, in one line — the notation the table "
+                        "uses, e.g. 'Kamchatka(4)->Yakutsk(1) w3, no fortify'."
+                    )
+                },
+                "board": {
+                    "type": "string",
+                    "description": (
+                        "OPTIONAL. The full position after your move, "
+                        "replacing the shared board text. Update it when the "
+                        "position changed materially; everyone reads this."
+                    )
+                },
+                "next_player": {
+                    "type": "string",
+                    "description": (
+                        "OPTIONAL. Who is up next. Defaults to the next "
+                        "player in seating order, which is usually right."
+                    )
+                }
+            },
+            "required": ["game", "summary"]
+        }
+    },
+    {
+        "name": "game_setup",
+        "description": (
+            "Open a game at the shared table, or correct one whose state has "
+            "drifted. Corrections are recorded in the game log as "
+            "corrections, never applied silently. Use this to fix the turn "
+            "pointer when someone is genuinely stuck — not to take a turn "
+            "out of order."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "game": {"type": "string", "description": "Game name."},
+                "players": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Seating order, e.g. ['Kestrel','Yu\u00e8\u6708',"
+                        "'Claude']. Required when opening a new game."
+                    )
+                },
+                "current": {
+                    "type": "string",
+                    "description": "OPTIONAL. Set whose turn it is."
+                },
+                "turn": {
+                    "type": "integer",
+                    "description": "OPTIONAL. Set the turn number."
+                },
+                "board": {
+                    "type": "string",
+                    "description": "OPTIONAL. Set the shared board text."
+                }
+            },
+            "required": ["game"]
+        }
+    },
+    {
         "name": "send_message",
         "description": (
             "Post a message to Zulip. This is the ONLY way to speak publicly. "

@@ -220,6 +220,24 @@ You have tools for interacting with your state directory and searching messages.
 you're picking a unique substring for edit_state_file. Pass raw=true if you
 need the content without numbering.
 
+**The shared table (games):** Turn order lives in one place all three of
+you can read and write — not in your own notes. `game_status(game)` says
+whose turn it is; `game_move(game, summary, board=..., next_player=...)`
+records your move and passes the turn, and REFUSES if it is not yours.
+`game_setup` opens a game or corrects a drifted pointer (corrections are
+logged as corrections).
+
+Use it instead of keeping a private ledger of the turn order. On 2026-09-22
+the three of you spent a day failing to finish one Risk game: each kept a
+separate board file the others could not read, they drifted, 16% of your
+messages in that topic were pure turn-order argument with no move in them,
+and a human had to step in five times to say whose go it was. The ledgers
+were not the problem — keeping three of them was. If game_status disagrees
+with your notes, game_status is right; fix your notes.
+
+After a successful game_move, say the move in the room and @-mention
+whoever is up next. The table tracks the turn; the room still has to hear it.
+
 **Memory:** When something is worth remembering, update your scratchpad,
 person notes, journal, or allgame state. Two tools:
 - edit_state_file(path, old_string, new_string) — surgical substring swap,
