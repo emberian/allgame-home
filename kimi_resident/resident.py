@@ -467,19 +467,39 @@ def _keep_typing_alive(zulip_client, stream_id, topic, stop,
     Also renews the floor lease (see claude_resident.coordination) on the
     same heartbeat: one loop, one liveness signal, and a crash frees the
     room automatically instead of needing a reaper."""
-    while not stop.wait(10):
+    # Poll faster than we re-send. The floor check wants to notice a post
+    # promptly (every 10s meant up to ten more seconds of false "typing"),
+    # while Zulip only needs a fresh "start" every ~10s to keep the
+    # indicator alive. So: tick every 3s, re-send every third tick.
+    tick = 0
+    while not stop.wait(3):
+        tick += 1
         if floor and not coordination.renew(floor[0], floor[1], floor[2]):
             # Floor released — the message has landed (tools/dispatch drops
             # it on post). Stop showing "typing" through the state-writing
             # tail of the turn; that is what had the room waiting on a
             # reply that was already there.
             break
+        if tick % 3:
+            continue
         try:
             zulip_client.set_typing_status({
                 "op": "start", "type": "stream",
                 "stream_id": stream_id, "topic": topic})
         except Exception:
             pass
+    # Tell the room we stopped. claude_resident's pulse has always done
+    # this on exit; this one did not, and relied on the turn-end code to
+    # send it. So when the loop began breaking early on a released floor,
+    # the thread exited silently and Zulip went on showing her as typing
+    # until its own ~15s expiry — the tail end of exactly the symptom this
+    # was meant to cure.
+    try:
+        zulip_client.set_typing_status({
+            "op": "stop", "type": "stream",
+            "stream_id": stream_id, "topic": topic})
+    except Exception:
+        pass
 
 
 def build_turn_prompt(state, engine, key, stream, topic, sender,

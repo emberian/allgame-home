@@ -564,7 +564,13 @@ class ClaudeResident:
         deadline = time.time() + max_seconds
 
         def _pulse():
-            while not stop.wait(10):
+            # Tick every 3s so a released floor is noticed promptly, but
+            # only re-send "start" every third tick — Zulip needs one about
+            # every 10s, and the room should stop seeing "typing" within a
+            # few seconds of the message landing, not ten.
+            tick = 0
+            while not stop.wait(3):
+                tick += 1
                 # Renew the floor lease on the same heartbeat that keeps the
                 # typing indicator alive: one loop, one liveness signal. If
                 # this process dies the pulse stops and the lease expires,
@@ -577,6 +583,8 @@ class ClaudeResident:
                     # instant we have spoken, instead of pulsing through
                     # whatever bookkeeping the turn does afterwards.
                     break
+                if tick % 3:
+                    continue
                 if time.time() > deadline:
                     self.logger.warning(
                         f"Typing indicator for #{stream}>{topic} hit its "
