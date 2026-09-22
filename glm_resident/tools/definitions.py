@@ -892,6 +892,16 @@ TOOL_DEFINITIONS = [
                 "board": {
                     "type": "string",
                     "description": "OPTIONAL. Set the shared board text."
+                },
+                "finished": {
+                    "type": "string",
+                    "description": (
+                        "OPTIONAL. Declare the game over and how it ended, "
+                        "e.g. 'three-way draw by agreement' or 'Kestrel "
+                        "wins'. A finished game stops the turn clock and "
+                        "refuses further moves. Pass an empty string to "
+                        "reopen one closed by mistake."
+                    )
                 }
             },
             "required": ["game"]

@@ -138,8 +138,11 @@ def _render(data: dict, log_lines: int = STATUS_LOG_LINES) -> str:
     players = data.get("players", [])
     cur = data.get("current")
     out = [f"**{data.get('game')}** — turn {data.get('turn', 1)}",
-           f"Players: {', '.join(players)}",
-           f"UP NOW: **{cur}**"]
+           f"Players: {', '.join(players)}"]
+    if data.get("finished"):
+        out.append(f"GAME OVER — {data['finished']}")
+    else:
+        out.append(f"UP NOW: **{cur}**")
     if data.get("board"):
         out += ["", "Board/notes:", data["board"]]
     log = data.get("log", [])
@@ -191,6 +194,11 @@ def game_move(inp: dict, ctx) -> dict:
         if data is None:
             return {"content": f"No game called {game!r}. Open it with "
                                f"game_setup first.", "is_error": True}
+        if data.get("finished"):
+            return {"content": (
+                f"{game} is over — {data.get('finished')}. Reopen it with "
+                f"game_setup(finished=\"\") if that is wrong."),
+                "is_error": True}
         players = data.get("players", [])
         me = _match_player(getattr(ctx, "display_name", "") or "", players)
         if me is None:
@@ -291,6 +299,14 @@ def game_setup(inp: dict, ctx) -> dict:
         if inp.get("board") is not None:
             data["board"] = str(inp["board"])[:MAX_BOARD_CHARS]
             changes.append("board updated")
+        if inp.get("finished") is not None:
+            result = str(inp["finished"]).strip()
+            if result:
+                data["finished"] = result[:300]
+                changes.append(f"FINISHED: {result[:120]}")
+            else:
+                data.pop("finished", None)
+                changes.append("reopened")
 
         if not created and changes:
             # Corrections are logged, not silent. A pointer that moves
@@ -370,6 +386,12 @@ def stalled_turn(who: str, older_than: float) -> dict | None:
         except (OSError, json.JSONDecodeError):
             continue
         if not room_of(data):
+            continue
+        # A finished game has no next player. Without this the clock wakes
+        # each player in turn, every 8 minutes, forever, to play a game that
+        # ended — which is how a helpful mechanism becomes a nuisance. The
+        # risk2 draw on 2026-09-22 would have done exactly that.
+        if data.get("finished"):
             continue
         if _fold(data.get("current") or "") != _fold(who):
             continue
