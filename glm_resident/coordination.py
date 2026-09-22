@@ -215,7 +215,8 @@ def acquire(stream: str, topic: str, who: str,
         if _live(lease) and not _same(lease.get("who"), who):
             return False, lease
         recent = (lease or {}).get("recent") or []
-        mine = {"who": who, "at": time.time(), "held": True,
+        mine = {"who": who, "at": time.time(),
+                "taken_at": time.time(), "held": True,
                 "trigger": trigger_id,
                 "recent": (recent + [who])[-HISTORY:],
                 "since": datetime.now(timezone.utc).isoformat()}
@@ -241,6 +242,15 @@ def release(stream: str, topic: str, who: str):
         if lease and _same(lease.get("who"), who):
             # Keep the record, drop the claim: the next acquire reads this
             # to know we just had it and should yield.
+            held_for = time.time() - lease.get("taken_at", lease.get("at", 0))
             lease["held"] = False
             lease["at"] = time.time()
             _write(stream, topic, lease)
+            # The hold duration is the health metric for this whole
+            # mechanism: it should track how long the resident took to
+            # COMPOSE, and nothing else. When it was released at turn end
+            # instead of on post it ran 27s past the message landing, and
+            # the only way to see that was to correlate three logs by hand.
+            logger.info(
+                f"Floor released in #{stream}>{topic} by {who} "
+                f"after {held_for:.0f}s")
