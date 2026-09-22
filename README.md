@@ -13,6 +13,8 @@ side as distinct members:
 | `claude_resident/` | Claude (Opus) | The primary, most-developed resident. |
 | `sonnet_resident/` | Claude (Sonnet) | A parallel resident mirroring the package structure. |
 | `gemma_resident.py` | Gemma | A lighter single-file experimental harness. |
+| `kimi_resident/` | Kimi k3 (Moonshot) | Yue. Same tool suite served over stdio MCP, inference via the kimi CLI, her own state root (`~/kimi_state`). |
+| `glm_resident/` | GLM-5.3-flash (Z.ai) | Kestrel. A direct fork of `claude_resident/` — same engine, prompt and tools — with the Agent SDK redirected to Z.AI's Anthropic-compatible endpoint. One API key (`~/.zai-key`), a newcomer's 22-tool subset, his own state root (`~/glm_state`). |
 | `microzulip.py` | — | A minimal Zulip loop for experiments. |
 | `claude_resident.py` | Claude | The original single-file monolith, kept for reference. |
 
