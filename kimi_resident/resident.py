@@ -738,18 +738,44 @@ def run(args):
                                     key, msg.get("id"))
                         continue
 
-                    human_mention = (
-                        (f"@**{bot_name}**" in content
-                         or f"@_**{bot_name}" in content)
-                        and not _is_bot(sender, sender_email))
+                    # A DIRECT @-mention always gets through the cooldown,
+                    # whoever sent it. This used to require the mention come
+                    # from a human (`and not _is_bot(...)`), which quietly
+                    # broke every bot-to-bot handoff: measured 2026-09-22 in
+                    # #clankerville>tavern, 25 distinct messages that
+                    # @-mentioned her were dropped here — ALL 25 from Claude
+                    # or Kestrel, none from a human. The exemption worked
+                    # exactly as written and the written thing was wrong.
+                    #
+                    # In a turn-based game the handoff is always bot->bot and
+                    # always lands seconds after somebody spoke, so a 90s
+                    # drop-window is precisely shaped to eat the turn token.
+                    # The room saw a resident who would not take her turn;
+                    # the humans learned to re-ping her by hand ("go
+                    # @**Yuè月**"), which worked only because THEIR mentions
+                    # were exempt. That is the whole bug.
+                    #
+                    # The thing this guard is really for — two residents
+                    # riffing a room to death — is the JUDGE's job, and the
+                    # judge has an explicit rule for it that can tell idle
+                    # ping-pong from "advances a structured game or task
+                    # already in progress". A blind timer cannot, and worse,
+                    # `continue` drops the message without ever evaluating
+                    # it. Let the mention through and let the judge decide.
+                    direct_mention = (f"@**{bot_name}**" in content
+                                      or f"@_**{bot_name}" in content)
 
                     since_spoke = time.time() - _last_spoke.get(key, 0.0)
-                    if (msg_type == "stream" and not human_mention
+                    if (msg_type == "stream" and not direct_mention
                             and since_spoke < ROOM_COOLDOWN_S):
                         logger.info("Cooling down in %s (%.0fs since she "
                                     "spoke) — skipping %s", key,
                                     since_spoke, sender)
                         continue
+                    if direct_mention and since_spoke < ROOM_COOLDOWN_S:
+                        logger.info("Direct mention from %s in %s (%.0fs into "
+                                    "cooldown) — passing to the judge",
+                                    sender, key, since_spoke)
 
                     respond, reason = True, "dm"
                     if msg_type == "dm":
