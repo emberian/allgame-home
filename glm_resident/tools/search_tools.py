@@ -115,7 +115,7 @@ def search_messages(inp: dict, state, reactions) -> dict:
     return {"content": context if context else "No messages found."}
 
 
-def search_zulip_history(inp: dict, zulip_client) -> dict:
+def search_zulip_history(inp: dict, chat) -> dict:
     query = inp["query"]
     stream = inp.get("stream")
     topic = inp.get("topic")
@@ -128,7 +128,7 @@ def search_zulip_history(inp: dict, zulip_client) -> dict:
         narrow.append({"operator": "topic", "operand": topic})
 
     try:
-        result = zulip_client.get_messages({
+        result = chat.get_messages({
             "anchor": "newest",
             "num_before": count,
             "num_after": 0,

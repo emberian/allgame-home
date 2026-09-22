@@ -258,7 +258,7 @@ def run_metacog(resident):
             # Execute tools — metacog context has no Zulip/sandbox needs
             ctx = ToolContext(
                 state=resident.state,
-                zulip_client=resident.zulip,
+                chat_backend=resident.chat,
                 reactions=resident.reactions,
                 sandbox_dir=None,
                 stream="metacog",

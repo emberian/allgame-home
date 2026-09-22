@@ -49,10 +49,10 @@ class GLMResident:
     # Expose SYSTEM_PROMPT as class attribute for monitor compat
     SYSTEM_PROMPT = SYSTEM_PROMPT
 
-    def __init__(self, zulip_client, anthropic_client,
+    def __init__(self, chat_backend, anthropic_client,
                  state: StateManager, judge: EngagementJudge,
                  model: str = DEFAULT_MODEL):
-        self.zulip = zulip_client
+        self.chat = chat_backend
         self.anthropic = anthropic_client
         self.state = state
         self.judge = judge
@@ -510,7 +510,7 @@ class GLMResident:
         handle_update_message_event(
             event, self.state, self._msg_index,
             [pending, *self._inflight_batches], self._stream_id_map,
-            zulip=self.zulip)
+            zulip=self.chat)
 
     # ------------------------------------------------------------------
     # Typing indicator
@@ -556,7 +556,7 @@ class GLMResident:
         if not stream:
             # Try to populate the map
             try:
-                result = self.zulip.get_streams()
+                result = self.chat.get_streams()
                 if result.get("result") == "success":
                     for s in result.get("streams", []):
                         self._stream_id_map[s["stream_id"]] = s["name"]
@@ -580,7 +580,7 @@ class GLMResident:
                     break
             if stream_id is None:
                 return
-            self.zulip.set_typing_status({
+            self.chat.set_typing_status({
                 "op": op,
                 "type": "stream",
                 "stream_id": stream_id,

@@ -198,7 +198,11 @@ class EngagementJudge:
             # ever absent.
             if self.state:
                 return self._judge_with_model(message, stream)
-            if "claude" in content:
+            # The no-state fallback: look for HIS name, not the parent
+            # resident's. Inherited as the literal "claude", which in a
+            # fork means the fallback fires on someone else's name and
+            # never on his own.
+            if self.bot_name in content:
                 self.last_reason = "name in standing stream (fallback)"
                 return True
 
@@ -463,7 +467,7 @@ the remark when you've got nothing real to say.
             # too talkative during an outage beats silently ignoring people.
             self.logger.warning(f"Engagement judge model call failed: {e}")
             self.judge_errored = True
-            if "claude" in content.lower():
+            if self.bot_name in content.lower():
                 self.last_reason = "name in standing stream (model fallback)"
             elif self._replying_to_claude(stream, topic):
                 self.last_reason = (

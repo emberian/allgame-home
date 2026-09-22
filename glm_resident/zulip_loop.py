@@ -82,7 +82,7 @@ def backfill_history(resident):
 
     if BACKFILL_ALL_STREAMS:
         try:
-            streams_result = resident.zulip.get_streams()
+            streams_result = resident.chat.get_streams()
             if streams_result.get("result") == "success":
                 for s in streams_result.get("streams", []):
                     name = s.get("name")
@@ -96,7 +96,7 @@ def backfill_history(resident):
 
     for stream, num_before in stream_targets:
         try:
-            result = resident.zulip.get_messages({
+            result = resident.chat.get_messages({
                 "anchor": "newest",
                 "num_before": num_before,
                 "num_after": 0,
@@ -200,7 +200,7 @@ def _mark_all_handled(resident) -> int:
     marked = 0
     for narrow in narrows:
         try:
-            result = resident.zulip.get_messages({
+            result = resident.chat.get_messages({
                 "anchor": "newest",
                 "num_before": 50,
                 "num_after": 0,
@@ -247,7 +247,7 @@ def replay_pending(resident):
     def _collect(narrow: list[dict], label: str):
         stale_skipped = 0
         try:
-            result = resident.zulip.get_messages({
+            result = resident.chat.get_messages({
                 "anchor": "newest",
                 "num_before": 50,
                 "num_after": 0,
@@ -348,7 +348,7 @@ def run(resident):
 
     # Pre-populate stream ID map for typing events (must be before replay)
     try:
-        streams_result = resident.zulip.get_streams()
+        streams_result = resident.chat.get_streams()
         if streams_result.get("result") == "success":
             for s in streams_result.get("streams", []):
                 resident._stream_id_map[s["stream_id"]] = s["name"]
@@ -377,7 +377,7 @@ def run(resident):
     start_distiller(resident)
     start_solitude(resident)
 
-    result = resident.zulip.register(
+    result = resident.chat.register(
         event_types=["message", "reaction", "typing", "update_message"],
         narrow=[],
     )
@@ -412,7 +412,7 @@ def run(resident):
 
     def _fetch_events(block: bool):
         nonlocal queue_id, last_event_id
-        events = resident.zulip.get_events(
+        events = resident.chat.get_events(
             queue_id=queue_id,
             last_event_id=last_event_id,
             dont_block=not block,
@@ -420,7 +420,7 @@ def run(resident):
         if events.get("result") != "success":
             if events.get("code") == "BAD_EVENT_QUEUE_ID":
                 logger.warning("Event queue expired, re-registering...")
-                reg = resident.zulip.register(
+                reg = resident.chat.register(
                     event_types=["message", "reaction", "typing",
                                  "update_message"],
                     narrow=[],

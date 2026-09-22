@@ -38,6 +38,7 @@ from glm_resident.config import (
     DISTILL_ERA_SPAN,
     DISTILL_LOAD_MAX_CHARS,
 )
+from glm_resident.util import start_daemon_once
 from glm_resident.state import _atomic_write
 from glm_resident.sdk_call import PolicyRefusal, complete as sdk_complete
 
@@ -344,6 +345,6 @@ def start_distiller(resident):
             except Exception as e:
                 logger.error(f"Distiller error: {e}", exc_info=True)
 
-    threading.Thread(target=_loop, daemon=True, name="distiller").start()
+    start_daemon_once("distiller", _loop)
     logger.info(f"Distiller started (every {DISTILL_INTERVAL}s, "
                 f"raw-keep {DISTILL_RAW_KEEP})")

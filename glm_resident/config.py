@@ -319,6 +319,19 @@ DEFAULT_STANDING_STREAMS = [
 # someone can call him into #allgame by name without him living there.
 MENTION_ONLY_STREAMS: list[str] = []
 
+# Discord rooms are namespaced with this prefix when they become
+# (stream, topic) pairs. It is not cosmetic: his memory is organized by room
+# (channels/{stream}/{topic}.jsonl, session keys, the distiller's per-topic
+# volumes), and a Discord #general and a Zulip #general are DIFFERENT ROOMS
+# with different people in them. Unprefixed, they would share one log file,
+# one distilled memory and one session — he would carry a remark from one
+# room into the other and be confidently wrong about who said it.
+#
+# The prefix also shows up in his prompt as "#dc-general", which is a
+# feature: he needs to know which platform he is speaking on, because the
+# people and the norms differ.
+DISCORD_STREAM_PREFIX = "dc-"
+
 # The other model residents sharing these rooms. Used by the judge to damp
 # bot-to-bot ping-pong: two residents riffing can keep a room busy with
 # nobody in it. Kestrel's own name is filtered out at use time, so this list

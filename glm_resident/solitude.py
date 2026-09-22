@@ -24,6 +24,7 @@ import time
 import logging
 import threading
 
+from glm_resident.util import start_daemon_once
 from glm_resident.config import (
     SOLITUDE_ENABLED,
     SOLITUDE_QUIET_MINUTES,
@@ -147,7 +148,7 @@ def start_solitude(resident):
             except Exception as e:
                 logger.error(f"Solitude loop error: {e}", exc_info=True)
 
-    threading.Thread(target=_loop, daemon=True, name="solitude").start()
-    logger.info(
-        f"Solitude started (rooms quiet {SOLITUDE_QUIET_MINUTES}m, "
-        f"at most every {SOLITUDE_INTERVAL_HOURS}h)")
+    if start_daemon_once("solitude", _loop):
+        logger.info(
+            f"Solitude started (rooms quiet {SOLITUDE_QUIET_MINUTES}m, "
+            f"at most every {SOLITUDE_INTERVAL_HOURS}h)")

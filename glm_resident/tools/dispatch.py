@@ -34,12 +34,15 @@ def execute_tool(tool_name: str, tool_input: dict, ctx: "ToolContext") -> dict:
 
 class ToolContext:
     """Holds references needed by tool handlers."""
-    def __init__(self, state, zulip_client, reactions, sandbox_dir,
+    def __init__(self, state, chat_backend, reactions, sandbox_dir,
                  stream, topic, sender, message,
                  anthropic_client=None, default_model=None,
                  display_name="Kestrel"):
         self.state = state
-        self.zulip = zulip_client
+        # The ChatBackend for the platform THIS turn arrived on — so a tool
+        # answers in the room that spoke, not in whichever platform booted
+        # first. See backend.py.
+        self.chat = chat_backend
         self.reactions = reactions
         self.sandbox_dir = sandbox_dir
         self.stream = stream
@@ -82,13 +85,13 @@ def _h_note_crosstopic(inp, ctx):
     return state_tools.note_crosstopic(inp, ctx.state)
 
 def _h_upload_state_file(inp, ctx):
-    return state_tools.upload_state_file(inp, ctx.state, ctx.zulip)
+    return state_tools.upload_state_file(inp, ctx.state, ctx.chat)
 
 def _h_search_messages(inp, ctx):
     return search_tools.search_messages(inp, ctx.state, ctx.reactions)
 
 def _h_search_zulip_history(inp, ctx):
-    return search_tools.search_zulip_history(inp, ctx.zulip)
+    return search_tools.search_zulip_history(inp, ctx.chat)
 
 def _h_search_archive(inp, ctx):
     return search_tools.search_archive(inp, ctx.state)
@@ -114,10 +117,10 @@ def _h_get_sandbox_file(inp, ctx):
     return sandbox_tools.get_sandbox_file(inp, ctx.sandbox_dir)
 
 def _h_upload_sandbox_file(inp, ctx):
-    return sandbox_tools.upload_sandbox_file(inp, ctx.sandbox_dir, ctx.zulip)
+    return sandbox_tools.upload_sandbox_file(inp, ctx.sandbox_dir, ctx.chat)
 
 def _h_fetch_url(inp, ctx):
-    return web_tools.fetch_url(inp, ctx.zulip, ctx.sandbox_dir)
+    return web_tools.fetch_url(inp, ctx.chat, ctx.sandbox_dir)
 
 def _h_web_search(inp, ctx):
     return web_tools.web_search(inp)
@@ -159,11 +162,17 @@ def _h_get_user_tweets(inp, ctx):
     return x_tools.get_user_tweets(inp)
 
 
-_ZULIP_MAX_LEN = 10000  # Zulip's default message length limit
+# Fallback only, for a backend that does not declare a ceiling. The real
+# number comes from ChatBackend.max_message_chars, because it is not the
+# same everywhere: Zulip takes ~10k and Discord REJECTS anything over
+# 2000. Hardcoding Zulip's limit would not truncate a long Discord reply,
+# it would fail the send outright and leave the room silent with no sign
+# anything went wrong.
+_FALLBACK_MAX_LEN = 2000
 
 
-def _split_message(content: str, max_len: int = _ZULIP_MAX_LEN) -> list[str]:
-    """Split a long message into chunks that fit within Zulip's limit.
+def _split_message(content: str, max_len: int = _FALLBACK_MAX_LEN) -> list[str]:
+    """Split a long message into chunks that fit the platform's limit.
 
     Tries to split at paragraph boundaries (double newlines), falling back
     to single newlines, then hard-cutting as a last resort.
@@ -201,12 +210,13 @@ def _post_chunks(ctx, content, build_payload, log_stream, log_topic, label):
 
     Shared by send_message and send_dm so the chunking / send / log / id
     bookkeeping lives in exactly one place."""
-    chunks = _split_message(content)
+    chunks = _split_message(
+        content, getattr(ctx.chat, "max_message_chars", _FALLBACK_MAX_LEN))
     all_posted_ids = []
     for i, chunk in enumerate(chunks):
         if i > 0:
             time.sleep(0.5)  # small delay between split messages
-        result = ctx.zulip.send_message(build_payload(chunk))
+        result = ctx.chat.send_message(build_payload(chunk))
         if result.get("result") != "success":
             return {"content": f"Failed to send chunk {i+1}/{len(chunks)}: {result}",
                     "is_error": True}
@@ -312,7 +322,7 @@ def _h_send_dm(inp, ctx):
     if not recipient:
         return {"content": "No recipient given.", "is_error": True}
 
-    user_ids, unresolved = _resolve_recipients(recipient, ctx.zulip)
+    user_ids, unresolved = _resolve_recipients(recipient, ctx.chat)
     if unresolved:
         return {"content": (f"Could not resolve recipient(s): {', '.join(unresolved)}. "
                             f"Use an exact email or full display name."),
@@ -335,7 +345,7 @@ def _h_add_reaction(inp, ctx):
         message_id = ctx.message.get("id")
     if not message_id:
         return {"content": "No message_id provided and no triggering message available.", "is_error": True}
-    result = ctx.zulip.add_reaction({
+    result = ctx.chat.add_reaction({
         "message_id": message_id,
         "emoji_name": emoji_name,
     })

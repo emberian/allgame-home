@@ -461,7 +461,7 @@ class AgentEngine:
         self._last_context_tokens = 0
         ctx = ToolContext(
             state=self.resident.state,
-            zulip_client=self.resident.zulip,
+            chat_backend=self.resident.chat,
             reactions=self.resident.reactions,
             sandbox_dir=None,
             stream=stream,

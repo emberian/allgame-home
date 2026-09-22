@@ -86,11 +86,14 @@ _TEXT_CONTENT_HINTS = (
 )
 
 
-def fetch_url(inp: dict, zulip_client=None, sandbox_dir=None) -> dict:
-    """Fetch any URL. Zulip links (/user_uploads/... or the Zulip host) are
-    fetched with the bot's authenticated session so the resident can download
-    *any* attachment, not just images. Text is returned inline; binaries are
-    saved into the sandbox workspace for use with the sandbox file tools."""
+def fetch_url(inp: dict, chat=None, sandbox_dir=None) -> dict:
+    """Fetch any URL. Links belonging to the resident's own chat platform
+    are fetched with the bot's authenticated session, so he can download
+    *any* attachment posted in a room, not just images — on Zulip that is
+    /user_uploads/... and the Zulip host; on Discord the CDN. Which links
+    those are is the backend's question to answer (chat.claim_url), not
+    this tool's. Text is returned inline; binaries are saved into the
+    sandbox workspace for use with the sandbox file tools."""
     from pathlib import Path
     from urllib.parse import urljoin, urlparse, unquote
 
@@ -98,25 +101,18 @@ def fetch_url(inp: dict, zulip_client=None, sandbox_dir=None) -> dict:
     if not url:
         return {"content": "No url provided.", "is_error": True}
 
-    zulip_base = getattr(zulip_client, "base_url", "") or ""
-    zulip_host = urlparse(zulip_base).netloc if zulip_base else ""
-
-    is_zulip = False
-    if url.startswith("/user_uploads") or url.startswith("/api/"):
-        if zulip_client is None:
-            return {"content": "Relative Zulip path but no Zulip session "
-                    "available.", "is_error": True}
-        url = urljoin(zulip_base, url)
-        is_zulip = True
+    claimed = chat.claim_url(url) if chat is not None else None
+    is_ours = claimed is not None
+    if is_ours:
+        url = claimed
     elif not url.startswith(("http://", "https://")):
         return {"content": "URL must start with http:// or https:// "
-                "(or be a /user_uploads/... Zulip path)", "is_error": True}
-    elif zulip_host and urlparse(url).netloc == zulip_host:
-        is_zulip = True
+                "(or be a path on your own chat platform, e.g. a Zulip "
+                "/user_uploads/... link)", "is_error": True}
 
     try:
-        if is_zulip and zulip_client is not None:
-            response = zulip_client.session.get(url, timeout=30)
+        if is_ours:
+            response = chat.fetch_authed(url, timeout=30)
         else:
             import requests as _requests
             response = _requests.get(url, timeout=15, headers={

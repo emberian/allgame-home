@@ -4,7 +4,6 @@ import base64
 import logging
 from pathlib import Path
 
-from glm_resident.util import zulip_upload_file
 
 logger = logging.getLogger("tools.sandbox")
 
@@ -42,7 +41,7 @@ def get_sandbox_file(inp: dict, sandbox_dir: str | None) -> dict:
 
 
 def upload_sandbox_file(inp: dict, sandbox_dir: str | None,
-                        zulip_client) -> dict:
+                        chat) -> dict:
     path = inp.get("path", "")
     if not path or ".." in path or path.startswith("/"):
         return {"content": "Invalid path.", "is_error": True}
@@ -68,7 +67,7 @@ def upload_sandbox_file(inp: dict, sandbox_dir: str | None,
                 f"Split or compress first.", "is_error": True}
 
     try:
-        result = zulip_upload_file(filepath, zulip_client)
+        result = chat.upload_file(filepath)
         if result.get("result") == "success":
             uri = result["uri"]
             logger.info(

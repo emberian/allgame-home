@@ -28,7 +28,7 @@ from glm_resident.config import (
     SESSION_SUMMARY_LOAD_GLOBAL,
     SESSION_REAPER_INTERVAL,
 )
-from glm_resident.util import safe_filename
+from glm_resident.util import safe_filename, start_daemon_once
 
 logger = logging.getLogger("session_summary")
 
@@ -223,9 +223,9 @@ def start_session_reaper(resident):
             except Exception as e:
                 logger.error(f"Session reaper error: {e}", exc_info=True)
 
-    thread = threading.Thread(
-        target=_loop, daemon=True, name="session-reaper")
-    thread.start()
+    # Once per process, however many chat loops start up — see
+    # util.start_daemon_once.
+    start_daemon_once("session-reaper", _loop)
     logger.info("Session reaper started "
                 f"(interval {SESSION_REAPER_INTERVAL}s)")
 

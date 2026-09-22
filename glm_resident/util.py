@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import logging
 import mimetypes
+import threading
 from pathlib import Path
 
 import requests
@@ -119,3 +120,41 @@ def human_gap(seconds: float) -> str:
     if d < 14:
         return f"{d} day{'s' if d > 1 else ''}" + (f" {h}h" if h else "")
     return f"{d // 7} weeks"
+
+
+# ---------------------------------------------------------------------------
+# Named daemon threads, started at most once per process
+# ---------------------------------------------------------------------------
+# Kestrel can run two chat loops at once (Zulip + Discord, see
+# discord_loop.run_threaded), and each loop's startup path wants the same
+# background sidecars: the session reaper, the distiller, solitude. Started
+# naively, the second loop spawns a SECOND copy of each — and these are not
+# harmless duplicates. Two distillers sweep the same topics on the same
+# interval, paying twice for the same era volumes and racing each other on
+# the hits files; two solitude threads mean two uninvited turns; two reapers
+# write the same session note twice.
+#
+# The guard lives here rather than in each start_* function so there is one
+# rule instead of three copies of it.
+
+_DAEMONS: dict = {}
+_DAEMON_LOCK = threading.Lock()
+
+
+def start_daemon_once(name: str, target) -> bool:
+    """Start a named daemon thread unless one by that name is already alive.
+
+    Returns True if it started one. Logs (rather than raises) on a repeat,
+    because "the other loop already did it" is the expected case, not a
+    fault.
+    """
+    with _DAEMON_LOCK:
+        existing = _DAEMONS.get(name)
+        if existing is not None and existing.is_alive():
+            logging.getLogger("util").info(
+                f"{name} already running — not starting a second")
+            return False
+        thread = threading.Thread(target=target, daemon=True, name=name)
+        _DAEMONS[name] = thread
+        thread.start()
+        return True

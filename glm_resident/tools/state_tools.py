@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 
 from glm_resident.config import CROSSTOPIC_FILE, CROSSTOPIC_MAX_ENTRIES
 from glm_resident.state import _atomic_write
-from glm_resident.util import zulip_upload_file
 
 logger = logging.getLogger("tools.state")
 
@@ -283,7 +282,7 @@ def edit_state_file(inp: dict, state) -> dict:
             f"{sign}{delta} chars)"}
 
 
-def upload_state_file(inp: dict, state, zulip_client) -> dict:
+def upload_state_file(inp: dict, state, chat) -> dict:
     """Upload a file from the state directory to Zulip.
 
     Returns a markdown link Claude can paste into send_message. Useful for
@@ -312,7 +311,7 @@ def upload_state_file(inp: dict, state, zulip_client) -> dict:
         return {"content": f"File is empty: {path}", "is_error": True}
 
     try:
-        result = zulip_upload_file(full_path, zulip_client)
+        result = chat.upload_file(full_path)
         if result.get("result") == "success":
             uri = result["uri"]
             logger.info(

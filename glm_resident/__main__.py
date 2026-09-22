@@ -13,10 +13,12 @@ from glm_resident.config import (
 )
 
 from glm_resident.auth import build_anthropic_client
+from glm_resident.zulip_backend import ZulipBackend
 from glm_resident.state import StateManager
 from glm_resident.judge import EngagementJudge
 from glm_resident.resident import GLMResident
 from glm_resident import zulip_loop
+from glm_resident import discord_loop
 from glm_resident.supervisor import run_supervised, exit_if_orphaned
 
 # His own bot credentials. Claude's entry point defaults to None and lets
@@ -24,6 +26,7 @@ from glm_resident.supervisor import run_supervised, exit_if_orphaned
 # sibling resident inheriting that default would log in as Claude and
 # answer his rooms in his name, so this one is explicit.
 DEFAULT_ZULIPRC = str(HARNESS_DIR / "kestrel-zuliprc")
+DEFAULT_DISCORD_TOKEN = Path.home() / ".kestrel-discord-token"
 
 
 def main():
@@ -43,6 +46,19 @@ def main():
     parser.add_argument("--metacog", action="store_true",
                         help="Run one metacognitive self-curation cycle "
                         "and exit")
+    # --- Discord (see backend.py / discord_loop.py) -------------------
+    parser.add_argument("--discord", action="store_true",
+                        help="Also live in Discord, alongside Zulip")
+    parser.add_argument("--discord-only", action="store_true",
+                        help="Live in Discord and NOT Zulip (for bring-up)")
+    parser.add_argument("--discord-token-file", default=str(DEFAULT_DISCORD_TOKEN),
+                        help=f"Bot token file (default: {DEFAULT_DISCORD_TOKEN})")
+    parser.add_argument("--discord-guild", type=int, default=None,
+                        help="Guild id; defaults to the only guild he is in")
+    parser.add_argument("--discord-channel", action="append",
+                        dest="discord_channels", default=None,
+                        help="Discord channel to live in; repeatable. "
+                             "Omit to listen in every channel he can see.")
     parser.add_argument("--_supervised", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -130,6 +146,9 @@ def _run_directly(args):
     if args.zuliprc:
         zulip_kwargs["config_file"] = args.zuliprc
     zulip_client = zulip.Client(**zulip_kwargs)
+    # Everything downstream talks to a ChatBackend, never the raw
+    # client — that is the seam a Discord loop plugs into (backend.py).
+    chat = ZulipBackend(zulip_client)
 
     # Set up debug log tap
     debug_hook = _setup_debug_log()
@@ -138,7 +157,7 @@ def _run_directly(args):
     anthropic_client = build_anthropic_client(http_client=http_client)
     state = StateManager(args.state_dir)
 
-    bot_profile = zulip_client.get_profile()
+    bot_profile = chat.get_profile()
     bot_name = bot_profile.get("full_name", "Kestrel")
 
     from glm_resident.config import MENTION_ONLY_STREAMS
@@ -150,7 +169,7 @@ def _run_directly(args):
     )
 
     resident = GLMResident(
-        zulip_client=zulip_client,
+        chat_backend=chat,
         anthropic_client=anthropic_client,
         state=state,
         judge=judge,
@@ -160,8 +179,74 @@ def _run_directly(args):
     if args.metacog:
         from glm_resident.metacog import run_metacog
         run_metacog(resident)
+        return
+
+    # --- Discord, optionally alongside Zulip --------------------------
+    # ONE state dir, TWO resident objects. The alternative — a single
+    # resident whose `chat` attribute is swapped per turn — races: two
+    # loops answer concurrently, and a tool call would post into whichever
+    # platform happened to be installed when it ran. Two objects means two
+    # judges (so lurk decay is tracked per platform, which is what you
+    # want: being ignored on Discord should not silence him on Zulip) and
+    # two session managers, over one shared StateManager. His memory is
+    # the state dir, and that is shared.
+    #
+    # Room-name collisions between the platforms are prevented by
+    # config.DISCORD_STREAM_PREFIX, not by luck.
+    if args.discord or args.discord_only:
+        dresident = _build_discord_resident(args, state, anthropic_client)
+        if args.discord_only:
+            discord_loop.run(dresident, args.discord_channels)
+            return
+        discord_loop.run_threaded(dresident, args.discord_channels)
+
+    zulip_loop.run(resident)
+
+
+def _build_discord_resident(args, state, anthropic_client):
+    """A second GLMResident over the same state dir, speaking Discord."""
+    from pathlib import Path as _Path
+    from glm_resident.config import MENTION_ONLY_STREAMS
+    from glm_resident.discord_backend import DiscordBackend
+
+    token_path = _Path(args.discord_token_file)
+    if not token_path.exists():
+        raise SystemExit(
+            f"No Discord token at {token_path}. Create the bot at "
+            f"https://discord.com/developers/applications, enable the "
+            f"MESSAGE CONTENT and SERVER MEMBERS intents on its Bot page, "
+            f"then write the token to that file.")
+    token = token_path.read_text().strip()
+    if not token:
+        raise SystemExit(f"{token_path} is empty.")
+
+    backend = DiscordBackend(token, guild_id=args.discord_guild)
+    backend.start()
+    profile = backend.get_profile()
+
+    # Standing streams for the Discord judge: the rooms he lives in, named
+    # the way his memory names them. Without this every Discord channel is
+    # non-standing and the judge only ever engages on @-mentions and DMs.
+    if args.discord_channels:
+        standing = [backend.stream_name(backend.channel_name(c))
+                    for c in args.discord_channels]
     else:
-        zulip_loop.run(resident)
+        listed = backend.get_streams().get("streams", [])
+        standing = [backend.stream_name(s["name"]) for s in listed]
+
+    judge = EngagementJudge(
+        profile.get("full_name") or "Kestrel", standing,
+        anthropic_client=anthropic_client,
+        state_manager=state,
+        mention_only_streams=MENTION_ONLY_STREAMS,
+    )
+    return GLMResident(
+        chat_backend=backend,
+        anthropic_client=anthropic_client,
+        state=state,
+        judge=judge,
+        model=args.model,
+    )
 
 
 if __name__ == "__main__":
