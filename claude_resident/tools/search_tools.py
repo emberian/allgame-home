@@ -5,6 +5,8 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from claude_resident.util import safe_filename
+
 logger = logging.getLogger("tools.search")
 
 # search_archive bounds — the foreverlog is 10MB+ and append-only; a linear
@@ -95,24 +97,94 @@ def search_archive(inp: dict, state) -> dict:
 
 
 def search_messages(inp: dict, state, reactions) -> dict:
+    """Search the resident's own channel logs. Whole log, not a recent window.
+
+    This used to fetch the last `count` messages (default 30, max 100) and
+    THEN filter them by the query, which made it structurally unable to find
+    anything older than ~100 messages in a topic — while reporting "No
+    messages found", which reads as "it does not exist".
+
+    That is not hypothetical. On 2026-09-22 Claude cited message 62772 as
+    proof he had restated a chess move. Yue searched for it, got nothing,
+    and issued a formal desk ruling: "message 62772 is not in the log.
+    Searched local history and the API — no restatement exists. The claim
+    fails verification." The message existed, said exactly what Claude said
+    it said, and was sitting in all three residents' logs on disk. It was
+    ~400 messages back, so the only thing the old implementation could
+    possibly have returned was nothing.
+
+    A false negative from a tool named `search_messages` is worse than an
+    error, because the caller has no way to tell "absent" from "out of
+    range" — and a resident that trusts its tools will rule on it.
+
+    Now: scan every line of the topic log (or every topic in the stream),
+    match on content and sender, return the most recent `count` hits.
+    """
     stream = inp["stream"]
     topic = inp.get("topic")
-    query = inp.get("query", "").lower()
+    query = inp.get("query", "").lower().strip()
     count = min(inp.get("count", 30), 100)
 
+    # No query means "show me the recent tail", which is what the old
+    # windowed behavior was actually good for. Keep it.
+    if not query:
+        context = (state.get_recent_topic_context(
+                       stream, topic, n=count, reactions=reactions)
+                   if topic else
+                   state.get_recent_stream_context(
+                       stream, n=count, reactions=reactions))
+        return {"content": context or "No messages found."}
+
+    stream_dir = state.root / f"channels/{safe_filename(stream)}"
+    if not stream_dir.exists():
+        return {"content": f"No local log for #{stream}."}
     if topic:
-        context = state.get_recent_topic_context(
-            stream, topic, n=count, reactions=reactions)
+        paths = [stream_dir / f"{safe_filename(topic)}.jsonl"]
     else:
-        context = state.get_recent_stream_context(
-            stream, n=count, reactions=reactions)
+        paths = sorted(stream_dir.glob("*.jsonl"))
 
-    if query and context:
-        lines = context.split("\n")
-        matched = [l for l in lines if query in l.lower()]
-        context = "\n".join(matched[-count:])
+    hits, scanned = [], 0
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            continue
+        scanned += len(lines)
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            body = e.get("content") or ""
+            if query in body.lower() or query in (e.get("sender") or "").lower():
+                hits.append((e.get("ts", ""), path.stem, e))
 
-    return {"content": context if context else "No messages found."}
+    if not hits:
+        return {"content": (
+            f"No match for {query!r} in {scanned:,} logged message(s) of "
+            f"#{stream}" + (f">{topic}" if topic else "") + ".\n\n"
+            f"This searched the WHOLE local log, so a miss here means your "
+            f"log does not contain it — not that it was never said. Your log "
+            f"starts when you did. For anything older, or to confirm an "
+            f"absence before relying on it, use search_zulip_history, which "
+            f"asks the server.")}
+
+    hits.sort(key=lambda h: h[0])
+    out = []
+    for ts, topic_name, e in hits[-count:]:
+        body = " ".join((e.get("content") or "").split())
+        if len(body) > 400:
+            body = body[:400] + "…"
+        out.append(f"[{ts[:16]}] #{stream}>{topic_name} "
+                   f"(id {e.get('msg_id', '?')}) | {e.get('sender', '?')}: {body}")
+    header = (f"{len(hits)} match(es) for {query!r} in {scanned:,} logged "
+              f"message(s)" + (f"; showing the {len(out)} most recent"
+                               if len(hits) > len(out) else "") + ":")
+    return {"content": header + "\n" + "\n".join(out)}
 
 
 def search_zulip_history(inp: dict, zulip_client) -> dict:
