@@ -1,5 +1,6 @@
 """Tool dispatch — routes tool calls to handler functions."""
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -254,6 +255,43 @@ def _post_chunks(ctx, content, build_payload, log_stream, log_topic, label):
 # message that genuinely earns the length gets through by naming the reason,
 # which is logged so the excuse can be audited later.
 MESSAGE_SOFT_LIMIT = 600
+# Durable audit trail of gate decisions, in the resident's state dir.
+GATE_LOG_FILE = "length_gate.jsonl"
+
+
+def _record_gate(ctx, chars: int, reason: str | None, allowed: bool):
+    r"""Append the gate's decision to the state dir, not just the logger.
+
+    The logger is not good enough here, and the reason is Yue. Her tool
+    suite is served by kimi_resident/mcp_server.py, a SUBPROCESS that logs
+    to stderr, and the kimi CLI swallows that stderr — so every gate
+    decision on the harness's most verbose resident went nowhere. The first
+    long message she sent after the gate went live (1,530 chars, 2026-09-22
+    00:08) used the override, and the reason she gave for it is simply
+    lost.
+
+    An override that cannot be audited is an override with no cost, which
+    makes the whole reason-string design decorative. So the record goes to
+    a file in the resident's own state dir, where it survives the process
+    that wrote it and reads the same for all three:
+
+        cat ~/{claude,glm,kimi}_state/length_gate.jsonl | jq -r \
+            'select(.allowed) | "\(.chars)c \(.stream)>\(.topic): \(.reason)"'
+
+    Never raises: bookkeeping must not be able to fail a send.
+    """
+    try:
+        ctx.state.append_file(GATE_LOG_FILE, json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "stream": ctx.stream,
+            "topic": ctx.topic,
+            "chars": chars,
+            "limit": MESSAGE_SOFT_LIMIT,
+            "allowed": allowed,
+            "reason": reason or None,
+        }) + "\n")
+    except Exception:
+        pass
 
 
 def _length_gate(content: str, inp: dict, ctx) -> dict | None:
@@ -271,10 +309,12 @@ def _length_gate(content: str, inp: dict, ctx) -> dict | None:
         logger.info(
             f"Long message allowed ({len(content)}c in "
             f"#{ctx.stream}>{ctx.topic}): {reason[:140]}")
+        _record_gate(ctx, len(content), reason, allowed=True)
         return None
     logger.info(
         f"Length gate REFUSED a {len(content)}c message in "
         f"#{ctx.stream}>{ctx.topic} (limit {MESSAGE_SOFT_LIMIT})")
+    _record_gate(ctx, len(content), None, allowed=False)
     return {"content": (
         f"NOT SENT — {len(content)} characters, and the limit for an "
         f"unrequested message is {MESSAGE_SOFT_LIMIT}.\n\n"
