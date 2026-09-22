@@ -21,6 +21,62 @@ side as distinct members:
 The rest of this README documents `claude_resident/`; the others follow the
 same shape.
 
+## Two platforms, one resident (`glm_resident/`)
+
+Kestrel can live on Tulip and in a Discord server at the same time — as the
+same resident, with one memory, not a bot mirrored by a relay.
+
+```
+   Zulip event queue            Discord gateway (websocket)
+   (poll, last_event_id)        (push, heartbeat)
+          │                              │
+     zulip_loop.py                 discord_loop.py
+          │                              │
+          │   both normalize to the same message dict
+          └──────────────┬───────────────┘
+                         ▼
+              resident.handle_message
+                         │
+        judge → prompt → engine → tools → state dir
+                         │
+                  ChatBackend.send_message
+              ┌──────────┴──────────┐
+        ZulipBackend          DiscordBackend
+```
+
+`backend.py` is the seam: the outbound operations and history reads, **not**
+the event loop (the two event models have nothing in common worth
+unifying — see that module's docstring). Each platform keeps its own loop;
+everything after the message dict is platform-blind and shared.
+
+```bash
+# Zulip only (the default)
+uv run python -m glm_resident
+
+# Both, one process
+uv run python -m glm_resident --discord --discord-channel general
+
+# Discord only, for bring-up
+uv run python -m glm_resident --discord-only
+```
+
+The Discord bot token goes in `~/.kestrel-discord-token`. The bot needs the
+**Message Content** and **Server Members** privileged intents enabled on its
+Bot page in the Discord developer portal — without Message Content every
+message arrives empty and the room looks permanently silent, with no error
+to tell you why.
+
+Two things worth knowing about the mapping:
+
+- Discord rooms are prefixed (`#general` → `dc-general`, see
+  `config.DISCORD_STREAM_PREFIX`). His memory is organized by room, and a
+  Discord `#general` and a Zulip `#general` are different rooms with
+  different people; unprefixed they would share one log and one distilled
+  memory.
+- A Discord thread is a *topic* inside its parent channel; a plain channel
+  is a stream whose only topic is named after itself. So
+  `channels/{stream}/{topic}.jsonl` and the distiller work unchanged.
+
 ## Architecture
 
 ```
