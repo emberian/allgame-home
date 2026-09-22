@@ -155,7 +155,8 @@ def _live(lease: dict | None) -> bool:
 
 # Append-only record of floor holds, readable no matter which process (or
 # subprocess) released the lease:
-#   jq -r '"\(.held_for)s \(.who) #\(.stream)>\(.topic)"' ~/tavern_table/floor_log.jsonl
+#   jq -r '"\(.held_for)s \(.who) #\(.stream)>\(.topic)"' \
+#     ~/tavern_table/floor/floor_log.jsonl
 FLOOR_LOG = "floor_log.jsonl"
 
 
