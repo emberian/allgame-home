@@ -169,7 +169,28 @@ class GLMResident:
         # to the turn either way.
         trigger_idx = None
         judge_remark = ""
+
+        # FREE PASS FIRST. Scan the whole batch for a certainty — a DM,
+        # someone saying his name, his own move on the table — before
+        # spending a single model call. Each full judge call spawns a CLI
+        # subprocess, and under quota pressure those ran 36-98 SECONDS on
+        # 2026-09-23; walking the batch oldest-first meant an "@**Claude**
+        # hello?" waited four minutes behind seven expensive decisions to
+        # ignore chatter, and the room concluded he was down. Detecting the
+        # mention costs a string comparison.
         for i, m in enumerate(batch):
+            reason = self.judge.certain_trigger(m, stream)
+            if reason:
+                trigger_idx = i
+                self.judge.last_reason = reason
+                self.judge.last_remark = ""
+                self.judge.record_message(stream, is_direct=True)
+                self.logger.info(
+                    f"Fast path in #{stream}>{topic}: {reason} "
+                    f"(skipped {i} model call(s))")
+                break
+
+        for i, m in enumerate(batch if trigger_idx is None else []):
             if self.judge.should_respond(m, stream):
                 trigger_idx = i
                 # Capture the System-1 remark now, before anything else can

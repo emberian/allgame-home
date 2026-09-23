@@ -168,6 +168,47 @@ class EngagementJudge:
         else:
             return "silent"
 
+
+    def certain_trigger(self, message: dict, stream: str) -> str | None:
+        """A reason to engage that costs NOTHING to determine, or None.
+
+        Everything here is a FACT — a DM, someone saying your name, your own
+        move on the shared table — decided by string comparison and a file
+        read. None of it needs a model, and none of it is a judgment call.
+
+        It exists because the batch scan used to walk messages oldest-first
+        calling the full judge on each one until something said yes, and the
+        full judge spawns a CLI subprocess per call. Under quota pressure on
+        2026-09-23 those were taking 36-98 SECONDS each, so an "@**Claude**
+        hello?" sitting behind seven skippable messages waited four minutes
+        while the harness spent seven expensive calls deciding to ignore
+        chatter. The room reasonably concluded he was down.
+
+        Cheap certainties first, model second. Same principle as reading the
+        turn off the table instead of asking a heuristic whose turn it is.
+        """
+        if message.get("type") == "private":
+            return "DM"
+        content = (message.get("content") or "").lower()
+        sender = (message.get("sender_full_name") or "").lower()
+        if self.bot_name in sender:
+            return None                      # own echo, never a trigger
+        if self.state and self._is_bound_reading_topic(stream, message):
+            return "bound reading topic"
+        if stream.lower() not in self.standing_streams:
+            return None
+        if f"@**{self.bot_name}**" in content or f"@{self.bot_name}" in content:
+            return "direct @-mention"
+        topic_ = message.get("subject", "") or ""
+        try:
+            from claude_resident.tools import game_tools
+            game = game_tools.my_turn(stream, topic_, self.bot_name)
+        except Exception:
+            game = None
+        if game:
+            return f"my move in {game.get('game')} (turn {game.get('turn')})"
+        return None
+
     def should_respond(self, message: dict, stream: str) -> bool:
         # Clear any remark from a prior message: the fast paths below
         # (self / @-mention / DM) don't run the model judge, so a stale
