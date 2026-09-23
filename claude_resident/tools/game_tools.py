@@ -363,6 +363,13 @@ def my_turn(stream: str, topic: str, who: str) -> dict | None:
             continue
         if room_of(data) != (stream, topic):
             continue
+        # A finished game has no "up now". This guard was added to
+        # stalled_turn and NOT here, so the judge fast-path went on
+        # declaring "my move in risk2 (turn 24)" for a game that had ended
+        # in a draw the day before — engaging that resident on every
+        # message in the room, forever, for a turn that does not exist.
+        if data.get("finished"):
+            continue
         if _fold(data.get("current") or "") == _fold(who):
             return data
     return None
