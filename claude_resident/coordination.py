@@ -209,7 +209,8 @@ def backoff_for(share: float) -> float:
 
 def acquire(stream: str, topic: str, who: str,
             spoke_ago: float | None = None,
-            trigger_id=None) -> tuple[bool, dict | None]:
+            trigger_id=None,
+            addressed: bool = False) -> tuple[bool, dict | None]:
     """Try to take the floor. Returns (got_it, current_holder_if_not).
 
     Sleeps a fairness backoff FIRST, then takes the lock — so the wait
@@ -221,7 +222,16 @@ def acquire(stream: str, topic: str, who: str,
     memory means it survives a restart and cannot disagree between
     residents — the same reason the game table exists.
     """
-    if spoke_ago is None:
+    if addressed:
+        # Named in the message: go for the floor immediately. The backoff
+        # exists to share the room fairly between residents with equal
+        # claim, and someone who was asked by name does not have an equal
+        # claim — they have the only one. Without this the addressed
+        # resident pays the same fairness penalty as a bystander and loses
+        # the race to whoever happens to be quickest, which is how Kestrel
+        # came to answer questions put to Claude.
+        share = 0.0
+    elif spoke_ago is None:
         prev = _read(stream, topic) or {}
         recent = prev.get("recent") or []
         mine = sum(1 for r in recent if _same(r, who))
@@ -230,7 +240,9 @@ def acquire(stream: str, topic: str, who: str,
         # Explicit override, kept for tests and for callers with a better
         # idea of their own recency than the room has.
         share = 1.0 if spoke_ago < 30 else 0.0
-    time.sleep(backoff_for(share))
+    # An addressed resident also skips the decorrelation jitter: there is
+    # nothing to decorrelate from, it is the one the room asked.
+    time.sleep(0.0 if addressed else backoff_for(share))
     with _locked(stream, topic):
         lease = _read(stream, topic)
         if _live(lease) and not _same(lease.get("who"), who):

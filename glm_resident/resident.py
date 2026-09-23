@@ -232,10 +232,28 @@ class GLMResident:
             # renewed by the typing pulse, so a crash frees it in
             # FLOOR_TTL rather than muting the room. ---
             floor_me = bot_name
+            # Was THIS turn asked for by name? The floor exists to stop
+            # pile-ons among equals, and being addressed makes you not an
+            # equal for this message.
+            addressed = bool(self.judge.certain_trigger(trigger, stream))
             got_floor, held_by = coordination.acquire(
                 stream, topic, floor_me,
-                trigger_id=trigger.get("id"))
-            if not got_floor:
+                trigger_id=trigger.get("id"),
+                addressed=addressed)
+            if not got_floor and addressed:
+                # Do NOT stand down when the room said your name. Observed
+                # 2026-09-23 16:49: Claude fast-pathed a direct @-mention,
+                # then yielded to Kestrel, who held the floor for ambient
+                # interest ("[active/1] YES — Active thread Kestrel is
+                # participating in") and answered a question addressed to
+                # Claude. Being named losing to finding-it-interesting is
+                # the wrong arbitration, and silence from the person who
+                # was actually asked is worse than two replies.
+                self.logger.info(
+                    f"Floor in #{stream}>{topic} held by "
+                    f"{(held_by or {}).get('who')}, but this turn was "
+                    f"addressed to us — proceeding anyway")
+            elif not got_floor:
                 self.logger.info(
                     f"Floor in #{stream}>{topic} held by "
                     f"{(held_by or {}).get('who')} — standing down "

@@ -607,12 +607,76 @@ def _recent_activity_digest(state, streams, per_topic: int = 8,
     return "\n\n".join(parts) if parts else "(quiet everywhere)"
 
 
+# Minutes the table may sit on her turn before the harness wakes her.
+# Matches claude_resident/solitude.TURN_STALL_SECONDS.
+TURN_STALL_SECONDS = 8 * 60
+
+
+def _turn_clock_due(bot_name: str):
+    """The game where she is up and nothing has happened for a while."""
+    from claude_resident.tools import game_tools
+    return game_tools.stalled_turn(bot_name, TURN_STALL_SECONDS)
+
+
+def _take_stalled_turn(engine, state, game, bot_name):
+    """Give her a turn because the table says one is owed, not because a
+    message arrived. Turn-taking used to be parasitic on chat traffic: the
+    game advanced only when somebody happened to speak AND happened to wake
+    the right resident, so a quiet room stalled it outright."""
+    from claude_resident.tools import game_tools
+    room = game_tools.room_of(game) or ("", "")
+    stream, topic = room
+    if not stream:
+        return
+    mins = int(game.get("_stalled_for", 0) // 60)
+    logger.info("Turn clock: %s has been on %s for %dm — taking the turn",
+                game.get("game"), game.get("current"), mins)
+    prompt = (
+        "[System] The shared table says it is YOUR move in %s (turn %s), and "
+        "it has been for %d minutes with nothing happening. Nobody is going "
+        "to prompt you.\n\nCheck game_status, make your move, record it with "
+        "game_move, and say it in the room @-mentioning whoever is up next. "
+        "If you are genuinely blocked — waiting on dice, a ruling, a board "
+        "nobody restated — say THAT in the room instead, naming who you are "
+        "waiting on. Either way the game moves; a silent turn is the one "
+        "outcome that helps nobody."
+        % (game.get("game"), game.get("turn"), mins))
+    try:
+        game_tools.mark_nudged(game.get("game"))
+        engine.respond("%s>%s" % (stream, topic), prompt,
+                       stream=stream, topic=topic, sender=bot_name,
+                       msg_type="stream")
+    except Exception as e:
+        logger.warning("Turn-clock turn failed in %s>%s: %s", stream, topic, e)
+
+
 def _solitude_loop(engine, state, streams, bot_name):
     """When the rooms have been quiet for SOLITUDE_INTERVAL_S, give her a
     private turn. Serializes with chat turns via the engine's turn lock."""
     global _last_activity
     while True:
         time.sleep(60)
+
+        # THE TURN CLOCK, before the idle check. Yue is the resident this
+        # mechanism was written for — the 2026-09-22 stall sat on "UP NOW:
+        # Yuè月" for eighteen minutes — and she was the one who did not get
+        # it, because it was added to the two solitude.py files and her
+        # harness does not have one. Worth stating plainly: the fix shipped
+        # without covering the case that motivated it.
+        #
+        # This does NOT wait for the room to be idle. A stalled game is not
+        # a quiet room; two other players are waiting on her, and the room
+        # can be busy while her turn rots.
+        if not engine._in_flight:
+            try:
+                game = _turn_clock_due(bot_name)
+            except Exception as e:
+                logger.debug("turn clock check failed: %s", e)
+                game = None
+            if game:
+                _take_stalled_turn(engine, state, game, bot_name)
+                continue
+
         idle_for = time.time() - _last_activity
         if idle_for < config.SOLITUDE_INTERVAL_S:
             continue
@@ -862,11 +926,26 @@ def run(args):
                     # whichever of the three commits first here speaks and
                     # the others stand down instead of piling a second full
                     # answer onto the same question. ---
+                    # Was she asked by name? Being addressed outranks another
+                    # resident's ambient interest — on 2026-09-23 Claude
+                    # fast-pathed a direct @-mention, stood down for
+                    # Kestrel's "active thread I'm participating in", and
+                    # Kestrel answered a question put to Claude. Silence
+                    # from the one who was actually asked is worse than two
+                    # replies.
+                    addressed = direct_mention or msg_type == "dm"
                     got_floor, held_by = (True, None)
                     if msg_type == "stream":
                         got_floor, held_by = coordination.acquire(
-                            stream, topic, bot_name, trigger_id=msg.get("id"))
-                    if not got_floor:
+                            stream, topic, bot_name,
+                            trigger_id=msg.get("id"),
+                            addressed=addressed)
+                    if not got_floor and addressed:
+                        logger.info(
+                            "Floor in %s held by %s, but this turn was "
+                            "addressed to her — proceeding anyway", key,
+                            (held_by or {}).get("who"))
+                    elif not got_floor:
                         logger.info(
                             "Floor in %s held by %s — standing down", key,
                             (held_by or {}).get("who"))
