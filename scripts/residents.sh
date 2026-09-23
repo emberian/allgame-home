@@ -24,6 +24,12 @@
 
 cd "$(dirname "$0")/.." || exit 1
 
+# Processes started within this many seconds of each other are one
+# generation. A parent spawns its child in ~1s, so this needs to be a
+# few seconds — NOT generous. At 90 it clustered a whole second launch
+# into the first one and reported 'healthy' while six Claudes ran.
+GEN_TOLERANCE=10
+
 RESIDENTS=("claude_resident:.zuliprc:resident.log"
            "kimi_resident:yue-zuliprc:yue.log"
            "glm_resident::kestrel.log")
@@ -41,14 +47,28 @@ status() {
         local pkg="${spec%%:*}"
         local pids; pids=$(pids_for "$pkg" | tr '\n' ' ')
         local n; n=$(echo "$pids" | wc -w | tr -d ' ')
-        # Distinct start times = distinct generations. More than one means
-        # an orphan survived a previous restart.
+        # Distinct GENERATIONS, not distinct timestamps. A supervisor
+        # spawns its child a moment after itself, so a perfectly normal
+        # launch straddles a second boundary and shows two times — which
+        # the first version of this check reported as an orphan every
+        # single restart. Cluster anything within GEN_TOLERANCE seconds.
+        # python3 rather than awk: BSD awk has no strftime, and this needs
+        # to work on the machine it runs on, not the one it was written for.
         local gens; gens=$(ps -o lstart= -p "${pids// /,}" 2>/dev/null \
-                           | awk '{print $4}' | sort -u | tr '\n' ' ')
-        printf "  %-16s procs=%-3s generations: %s\n" "$pkg" "$n" "${gens:-none}"
-        # More than one distinct start time means an orphan survived a
-        # previous restart and is still answering the room with old code.
+            | python3 -c "
+import sys, time, calendar
+tol = $GEN_TOLERANCE
+ts = sorted(calendar.timegm(time.strptime(l.strip(), '%a %b %d %H:%M:%S %Y'))
+            for l in sys.stdin if l.strip())
+out, base = [], None
+for t in ts:
+    if base is None or t - base > tol:
+        base = t
+        out.append(time.strftime('%H:%M:%S', time.gmtime(t)))
+print(' '.join(out))
+" 2>/dev/null)
         local ngen; ngen=$(echo "$gens" | wc -w | tr -d ' ')
+        printf "  %-16s procs=%-3s generation(s): %s\n" "$pkg" "$n" "${gens:-none}"
         [ "$ngen" -gt 1 ] && { echo "    ^^ MULTIPLE GENERATIONS — orphaned resident still running"; any=1; }
     done
     return $any   # 0 = healthy, 1 = duplicate generations found
@@ -75,6 +95,20 @@ stop() {
 }
 
 start() {
+    # Refuse to start on top of a running set. `start` used to launch
+    # unconditionally, so calling it twice silently doubled every resident
+    # — which is exactly the failure this script exists to prevent, and it
+    # happened here while testing the script itself.
+    local running=0
+    for spec in "${RESIDENTS[@]}"; do
+        local pkg="${spec%%:*}"
+        running=$(( running + $(pids_for "$pkg" | wc -l) ))
+    done
+    if [ "$running" -gt 0 ]; then
+        echo "  REFUSING to start: $running process(es) already running."
+        echo "  Use 'restart', or 'stop' first."
+        return 1
+    fi
     for spec in "${RESIDENTS[@]}"; do
         local pkg="${spec%%:*}"; local rest="${spec#*:}"
         local rc="${rest%%:*}"; local log="${rest#*:}"
