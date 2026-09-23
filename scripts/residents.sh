@@ -28,7 +28,12 @@ RESIDENTS=("claude_resident:.zuliprc:resident.log"
            "kimi_resident:yue-zuliprc:yue.log"
            "glm_resident::kestrel.log")
 
-pids_for() { pgrep -f -- "-m $1" 2>/dev/null; }
+# Match the module EXACTLY. A bare "-m kimi_resident" also matches
+# "-m kimi_resident.mcp_server" — the MCP subprocess Yue spawns for every
+# turn — which made `status` report a second generation and cry wolf on
+# each of her turns, and made `stop` kill a child it had no business
+# naming. Anchor on a following space or end of string.
+pids_for() { pgrep -f -- "-m $1([[:space:]]|\$)" 2>/dev/null; }
 
 status() {
     local any=0
