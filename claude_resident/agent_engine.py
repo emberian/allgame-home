@@ -80,7 +80,11 @@ VISIBLE_TOOLS = {"send_message", "send_dm", "add_reaction"}
 _LIMIT_MARKERS = ("weekly limit", "usage limit", "rate limit",
                   "hit your limit", "resets ", "quota",
                   "disabled claude subscription access",
-                  "not allowed for this organization")
+                  "not allowed for this organization",
+                  # An empty or dead token for the current account. Same
+                  # remedy as a spent one: move to the next account rather
+                  # than retrying this one every turn.
+                  "not logged in", "please run /login")
 # How many spent accounts to walk past before giving up on a turn. Each
 # rotation costs a cold prefill, so this is not free — but with the
 # drain-emptiest-first policy the next account is routinely near its limit

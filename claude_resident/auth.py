@@ -50,8 +50,32 @@ def probe_accounts(max_age: float = 60.0) -> list[dict]:
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         logger.warning(f"tokeman probe failed: {e}")
         rows = []
+    keyed = _keyed_accounts()
+    if keyed is not None:
+        for r in rows:
+            if r.get("token_name") not in keyed:
+                # Healthy quota on an account he cannot authenticate as is
+                # not health. On 2026-10-02 tokeman gained toot@ with only a
+                # short-lived access_token and no `key`; rotation preferred
+                # it (soonest reset), read_oauth_token returned None for it,
+                # and every turn went out with an empty token — "Not logged
+                # in · Please run /login" — for as long as it stayed first.
+                q = dict(r.get("quota") or {})
+                q["status"] = "no_key"
+                r["quota"] = q
     _PROBE_CACHE.update(at=now, rows=rows)
     return rows
+
+
+def _keyed_accounts() -> set[str] | None:
+    """Names in tokens.toml that carry a long-lived `key`, or None if the
+    file cannot be read (then nothing is filtered, as before)."""
+    try:
+        with open(TOKEMAN_TOKENS_PATH, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return {e.get("name") for e in data.get("tokens", []) if e.get("key")}
 
 
 def _health(row: dict) -> tuple[int, float]:
@@ -149,6 +173,10 @@ def read_oauth_token(account: str | None = None) -> str | None:
     _ACTIVE["account"] = name
     for entry in data.get("tokens", []):
         if entry.get("name") == name:
+            if not entry.get("key"):
+                logger.warning(f"tokeman account {name} has no `key` "
+                               f"(only a short-lived access_token) — "
+                               f"unusable for the resident")
             return entry.get("key") or None
     logger.warning(f"No tokeman token named {name}")
     return None
