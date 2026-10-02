@@ -41,6 +41,44 @@ from claude_resident.util import (safe_filename, fmt_now,
                                   fmt_log_time, human_gap)
 
 
+
+# How many distinct reacted-to messages to itemize per turn; the rest are
+# folded into one tally line.
+REACTION_SUMMARY_MAX_MESSAGES = 8
+
+
+def _summarize_reactions(rxn_lines: list[str]) -> str:
+    """Collapse queued reaction notices into counts per message.
+
+    Each reaction used to become its own line — `😆 on your message: "…"` —
+    injected verbatim into the next turn. A laughing-emoji pile-on on
+    2026-09-29 left ~4,000 of those lines in his persistent tavern session,
+    about 98k tokens: a quarter of everything he could remember about that
+    room was the same emoji repeated. He noticed, and complained.
+
+    What a reaction tells him is "people liked that, this much". That is a
+    count, not a transcript. So: one line per message, emoji tallied, the
+    most-reacted first, bounded.
+    """
+    import re as _re
+    from collections import Counter, OrderedDict
+    per_msg: "OrderedDict[str, Counter]" = OrderedDict()
+    for line in rxn_lines:
+        m = _re.match(r'(.+?) on your message: "(.*)"$', line)
+        emoji, preview = (m.group(1), m.group(2)) if m else (line, "")
+        per_msg.setdefault(preview, Counter())[emoji] += 1
+    ranked = sorted(per_msg.items(), key=lambda kv: -sum(kv[1].values()))
+    out = []
+    for preview, counts in ranked[:REACTION_SUMMARY_MAX_MESSAGES]:
+        tally = " ".join(f"{e}×{n}" if n > 1 else e
+                         for e, n in counts.most_common())
+        out.append(f'{tally} on your message: "{preview}"')
+    rest = ranked[REACTION_SUMMARY_MAX_MESSAGES:]
+    if rest:
+        n = sum(sum(c.values()) for _, c in rest)
+        out.append(f"(+{n} more reaction(s) on {len(rest)} other message(s))")
+    return "<reactions_received>\n" + "\n".join(out) + "\n</reactions_received>"
+
 class ClaudeResident:
     """
     The main bot: listens to Zulip, decides whether to engage,
@@ -413,10 +451,7 @@ class ClaudeResident:
 
         key = (stream, topic)
         if key in self._pending_reactions and self._pending_reactions[key]:
-            rxn_lines = self._pending_reactions.pop(key)
-            rxn_text = ("<reactions_received>\n"
-                        + "\n".join(rxn_lines)
-                        + "\n</reactions_received>")
+            rxn_text = _summarize_reactions(self._pending_reactions.pop(key))
             content_blocks = [{"type": "text", "text": rxn_text}] + content_blocks
 
         # System-1 backchannel: the Haiku engagement judge let this message
