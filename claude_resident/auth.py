@@ -50,7 +50,7 @@ def probe_accounts(max_age: float = 60.0) -> list[dict]:
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         logger.warning(f"tokeman probe failed: {e}")
         rows = []
-    keyed = _keyed_accounts()
+    keyed = _usable_accounts()
     if keyed is not None:
         for r in rows:
             if r.get("token_name") not in keyed:
@@ -61,21 +61,47 @@ def probe_accounts(max_age: float = 60.0) -> list[dict]:
                 # and every turn went out with an empty token — "Not logged
                 # in · Please run /login" — for as long as it stayed first.
                 q = dict(r.get("quota") or {})
-                q["status"] = "no_key"
+                q["status"] = "no_usable_token"
                 r["quota"] = q
     _PROBE_CACHE.update(at=now, rows=rows)
     return rows
 
 
-def _keyed_accounts() -> set[str] | None:
-    """Names in tokens.toml that carry a long-lived `key`, or None if the
-    file cannot be read (then nothing is filtered, as before)."""
+# An access_token this close to expiry is not handed out: a turn can run
+# for minutes, and one that starts on a token about to die fails midway.
+ACCESS_TOKEN_MARGIN_S = 10 * 60
+
+
+def _token_for(entry: dict) -> str | None:
+    """The credential to use for one tokeman entry.
+
+    The long-lived `key` when there is one. Otherwise the OAuth
+    access_token, while it is comfortably unexpired: tokeman refreshes
+    those itself (toot@'s expiry moved forward a week between 2026-10-02
+    and 2026-10-12), and the CLI accepts one as CLAUDE_CODE_OAUTH_TOKEN —
+    verified on bobb@ 2026-10-12. Treating key-less accounts as unusable,
+    as 4d71cd2 did, was right for the bug it fixed (handing the CLI an
+    EMPTY token) and wrong as policy: on 2026-10-12 every keyed account was
+    at its weekly limit, bobb@ sat at 14% with a valid access_token, and
+    Claude went silent mid-turn in front of the room with capacity idle.
+    """
+    if entry.get("key"):
+        return entry["key"]
+    tok, exp = entry.get("access_token"), entry.get("expires_at")
+    if tok and exp and exp / 1000 - time.time() > ACCESS_TOKEN_MARGIN_S:
+        return tok
+    return None
+
+
+def _usable_accounts() -> set[str] | None:
+    """Names in tokens.toml with a credential usable right now, or None if
+    the file cannot be read (then nothing is filtered, as before)."""
     try:
         with open(TOKEMAN_TOKENS_PATH, "rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return None
-    return {e.get("name") for e in data.get("tokens", []) if e.get("key")}
+    return {e.get("name") for e in data.get("tokens", []) if _token_for(e)}
 
 
 def _health(row: dict) -> tuple[int, float]:
@@ -173,11 +199,11 @@ def read_oauth_token(account: str | None = None) -> str | None:
     _ACTIVE["account"] = name
     for entry in data.get("tokens", []):
         if entry.get("name") == name:
-            if not entry.get("key"):
-                logger.warning(f"tokeman account {name} has no `key` "
-                               f"(only a short-lived access_token) — "
-                               f"unusable for the resident")
-            return entry.get("key") or None
+            tok = _token_for(entry)
+            if not tok:
+                logger.warning(f"tokeman account {name} has no `key` and no "
+                               f"fresh access_token — unusable right now")
+            return tok
     logger.warning(f"No tokeman token named {name}")
     return None
 
