@@ -1,7 +1,7 @@
 #!/bin/bash
 # residents.sh — start/stop/status the resident family, by PID file.
 #
-#   scripts/residents.sh status|start|stop|restart [claude|yue|kestrel ...]
+#   scripts/residents.sh status|start|stop|restart [claude|yue|kestrel|mirror ...]
 #
 # No name means all three.
 #
@@ -33,7 +33,10 @@ mkdir -p "$RUN_DIR"
 # name:pkg:zuliprc:log   (empty zuliprc = the resident's own default)
 ALL=("claude:claude_resident:.zuliprc:resident.log"
      "yue:kimi_resident:yue-zuliprc:yue.log"
-     "kestrel:glm_resident::kestrel.log")
+     "kestrel:glm_resident::kestrel.log"
+     # Not a resident: the Delvetown mirror all three read (firehose live,
+     # hourly reconcile crawl). Managed here so it gets the same PID file.
+     "mirror:town_mirror::town_mirror.log")
 
 select_residents() {
     SEL=()
@@ -44,7 +47,7 @@ select_residents() {
         for spec in "${ALL[@]}"; do
             [ "${spec%%:*}" = "$want" ] && { SEL+=("$spec"); hit=1; }
         done
-        [ -n "$hit" ] || { echo "  unknown resident: $want (claude|yue|kestrel)"; return 1; }
+        [ -n "$hit" ] || { echo "  unknown name: $want (claude|yue|kestrel|mirror)"; return 1; }
     done
 }
 
@@ -149,5 +152,5 @@ case "$cmd" in
                  start_one "$s"
              done
              sleep 3; echo; status ;;
-    *) echo "usage: $0 status|start|stop|restart [claude|yue|kestrel ...]"; exit 1 ;;
+    *) echo "usage: $0 status|start|stop|restart [claude|yue|kestrel|mirror ...]"; exit 1 ;;
 esac

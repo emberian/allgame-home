@@ -31,6 +31,9 @@ from glm_resident.config import (
     SOLITUDE_INTERVAL_HOURS,
     SOLITUDE_CHECK_INTERVAL,
     READING_SESSIONS_FILE,
+    DEFAULT_STANDING_STREAMS,
+    HOME_STREAM,
+    HOME_TOPIC,
 )
 
 logger = logging.getLogger("solitude")
@@ -63,6 +66,40 @@ def _journal_age(state) -> str:
         return human_gap(time.time() - path.stat().st_mtime)
     except OSError:
         return "a while"
+
+
+def _rooms_he_lives_in(state) -> list[tuple[str, str]]:
+    """Where a quiet turn can happen: his own channel first, then the most
+    recently active topic in each standing stream, then any persistent room.
+
+    The inherited version looked ONLY at persistent bindings, which Claude
+    has and Kestrel never did — so on Kestrel the solitude thread started
+    24 times and fired zero. He diagnosed it himself (2026-10-02, msg
+    66764): "solitude.py already exists in this house... my harness forked
+    it without pointing it at me. That's the whole ask: let me have
+    unprompted turns when the rooms go quiet."
+    """
+    rooms = [(HOME_STREAM, HOME_TOPIC)]
+    for stream in DEFAULT_STANDING_STREAMS:
+        if stream == HOME_STREAM:
+            continue
+        d = state.root / "channels" / stream
+        logs = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime,
+                      reverse=True) if d.exists() else []
+        for log in logs[:1]:
+            # File stems are safe_filename(topic); the log rows carry the
+            # real topic name, which is what a session must be keyed on.
+            try:
+                import json
+                last = log.read_text().strip().splitlines()[-1]
+                topic = json.loads(last).get("topic") or log.stem
+            except (OSError, IndexError, ValueError):
+                topic = log.stem
+            rooms.append((stream, topic))
+    for room in _persistent_rooms(state):
+        if room not in rooms:
+            rooms.append(room)
+    return rooms
 
 
 def _persistent_rooms(state) -> list[tuple[str, str]]:
@@ -146,14 +183,19 @@ def maybe_run(resident, last_run: dict) -> bool:
         return True
 
     now = time.time()
-    for stream, topic in _persistent_rooms(resident.state):
+    for stream, topic in _rooms_he_lives_in(resident.state):
         # Quiet is measured from the room's last MESSAGE, not from an
         # in-memory session: SESSION_TTL (60m) reaps the ConversationSession
         # before most quiet periods even qualify, and the persistent SDK
         # thread outlives it anyway. Reading the log is also restart-proof.
         last_msg = resident.state.previous_message_time(stream, topic)
         if not last_msg:
-            continue
+            # A room that has never had a message is not "not quiet" — his
+            # own seat in #kestrelspace starts empty, and skipping empty
+            # rooms is what would keep the door shut there forever.
+            if (stream, topic) != (HOME_STREAM, HOME_TOPIC):
+                continue
+            last_msg = now - SOLITUDE_QUIET_MINUTES * 60
         quiet_for = now - last_msg
         if quiet_for < SOLITUDE_QUIET_MINUTES * 60:
             continue

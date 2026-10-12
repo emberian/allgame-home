@@ -330,6 +330,23 @@ def run(resident):
     start_distiller(resident)
     start_solitude(resident)
 
+    # Timers and watches the resident set for itself (tools: set_timer).
+    # Fired the way the turn clock fires a turn; solitude=True because a
+    # reminder that turns out to need nothing may rightly end in silence.
+    from claude_resident.timers import start_timer_loop
+
+    def _timer_turn(stream, topic, prompt):
+        session = (resident.sessions.get(stream, topic)
+                   or resident.sessions.create(stream, topic))
+        resident.agent_engine.respond(
+            session, stream, topic, sender="",
+            trigger={"sender_full_name": "", "timestamp": time.time()},
+            content_blocks=[{"type": "text", "text": prompt}],
+            solitude=True)
+        session.touch()
+
+    start_timer_loop(resident.state.root, _timer_turn)
+
     result = resident.zulip.register(
         event_types=["message", "reaction", "typing", "update_message"],
         narrow=[],

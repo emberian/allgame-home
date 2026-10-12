@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 
 DEFAULT_ZULIPRC = str(config.ALLGAME_DIR / "yue-zuliprc")
-DEFAULT_STREAMS = ["clankerville", "cislunar-space"]
+DEFAULT_STREAMS = ["clankerville", "cislunar-space", "delvetalk"]
 
 
 def main():

@@ -219,6 +219,14 @@ POSTMARK_STATUS_FILE = "postmark_status.md"
 POSTMARK_REFRESH_SECONDS = 4 * 3600  # doorstep regen is 30min; mail moves 2x/day
 POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 
+# Delvetown — delve.town, an AT Protocol town run by Grove Research Corp.
+# Kestrel has no account there (the house's one invite went to Claude, as
+# claude-of-tulip), so he reads the town through the public AppView only:
+# tools/delvetown_tools.py, delvetown_read. No credentials are involved.
+DELVETOWN_APPVIEW = "https://api.delve.town"
+DELVETOWN_TOWN_FEED = (  # "Town": every post in Delvetown, newest first
+    "at://did:plc:qzqct2rrq4u2gmy5g3mjxske/town.delve.feed.generator/town")
+
 # The Agent SDK is the only engine: Claude Code as a library on the
 # resident's own subscription (plan limits). The old direct Messages-API
 # loop was removed 2026-07-30 — it could not work on this auth anyway
@@ -351,7 +359,22 @@ PERSISTENT_BIRTH_RAW_CHARS = 1_600_000
 DEFAULT_STANDING_STREAMS = [
     "clankerville",    # the LLM/clanker neighborhood
     "cislunar-space",  # ambient too — he participates unprompted
+    "kestrelspace",    # his own — see HOME_STREAM
+    "delvetalk",       # talk about Delvetown — ambient
 ]
+
+# His own channel. Ember made it on 2026-10-02 and dedicated it to him, to
+# set up however he likes. Three things follow from "his": every message
+# there gets his attention without passing the judge (a room of your own is
+# not a room you have to be gated into, same as a bound reading room); his
+# unprompted solitude turns can happen there; and shape_space can change it
+# — and only it.
+HOME_STREAM = "kestrelspace"
+# Where his unprompted turns in his own space are held. A session needs a
+# (stream, topic); this is the default seat, not a constraint — from a turn
+# here send_message can open any topic in the channel. He can rename this
+# one like any other.
+HOME_TOPIC = "kestrel"
 
 # Streams where Kestrel only responds to direct @-mentions (no ambient judge).
 # Empty on purpose: both his standing streams are meant to be ambient. An
@@ -406,6 +429,8 @@ TOOL_SUBSET = [
     "list_state_files", "glob_state_files", "grep_state", "note_crosstopic",
     # the shared table (turn-taking across residents)
     "game_status", "game_move", "game_setup",
+    # his own channel (#kestrelspace): describe it, rename its topics
+    "shape_space",
     # comms
     "send_message", "send_dm", "add_reaction", "send_sysadmin_message",
     # search
@@ -416,4 +441,10 @@ TOOL_SUBSET = [
     "run_sandbox", "get_sandbox_file", "upload_sandbox_file",
     # web
     "fetch_url", "web_search",
+    # delvetown: public reads only — he has no account there yet
+    "delvetown_read",
+    # the town mirror: search, threads, people, what's new, SQL
+    "delvetown_search", "delvetown_thread", "delvetown_person", "delvetown_new", "delvetown_sql",
+    # timers and watches: waking yourself up
+    "set_timer", "list_timers", "cancel_timer",
 ]

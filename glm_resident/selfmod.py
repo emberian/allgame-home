@@ -1,4 +1,28 @@
-"""Self-modification (edit_harness) and git integration."""
+"""Self-modification (edit_harness) and git integration — for Kestrel.
+
+Forked from claude_resident, where it was written for a repo with one
+self-editing resident in it. This repo has three residents, Ember's own
+work in progress, and agents committing in the same tree, so three
+assumptions from the original are unsafe here and are changed:
+
+1. `git add -A`. The original staged the WHOLE working tree for its
+   checkpoint and delete commits, so a self-edit would sweep anyone's
+   uncommitted work into a commit under the resident's name. Every commit
+   here is path-limited: `git commit -- <his file>`, which records only
+   that path and leaves everyone else's staged and unstaged changes alone.
+
+2. `git revert HEAD`. The supervisor reverted whatever commit was on top
+   if its subject said "Claude self-edit:". With two self-editing
+   residents both writing that prefix, a crash in one could revert the
+   OTHER's edit. Kestrel's commits carry his own prefix, and the question
+   asked after a crash is "is the newest change to glm_resident/ my own
+   self-edit?" — his package's history, not the repo's HEAD. Rollback then
+   restores only the paths that commit touched, from its parent.
+
+3. Containment. create/delete checked the target was inside the package;
+   edit with an explicit file= did not, so "../claude_resident/judge.py"
+   would have edited another resident. Every action is contained now.
+"""
 
 import ast
 import logging
@@ -10,6 +34,43 @@ from datetime import datetime, timezone
 from glm_resident.config import HARNESS_DIR
 
 logger = logging.getLogger("selfmod")
+
+# Subject prefix for his self-edit commits. Distinct from Claude's on
+# purpose: the crash-revert keys on it.
+SELF_EDIT_PREFIX = "Kestrel self-edit:"
+PKG_NAME = "glm_resident"
+
+
+def _inside(pkg_dir: Path, target: Path) -> bool:
+    try:
+        target.resolve().relative_to(pkg_dir.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _rel(target: Path) -> str:
+    """Repo-relative path for git pathspecs."""
+    return str(target.resolve().relative_to(Path(HARNESS_DIR).resolve()))
+
+
+def _commit_paths(message: str, paths: list[str], new_file: bool = False):
+    """Commit ONLY these paths. Never the rest of the tree."""
+    if new_file:
+        _git_run(["add", "--", *paths])
+    return _git_run(["commit", "-m", message, "--", *paths])
+
+
+def _checkpoint(target: Path, commit_message: str):
+    """If his target file has uncommitted changes, commit just that file
+    first, so a later revert of the self-edit restores exactly what was
+    there. Clean file: nothing to checkpoint (no empty commits)."""
+    rel = _rel(target)
+    dirty = _git_run(["status", "--porcelain", "--", rel]).stdout.strip()
+    if dirty:
+        _git_run(["commit", "-m",
+                  f"Kestrel pre-edit checkpoint (before: {commit_message})",
+                  "--", rel])
 
 
 def _git_run(args: list[str], **kw):
@@ -108,10 +169,6 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
             return {"content": f"Refused — parse error in new file:\n{parse_err}",
                     "is_error": True}
 
-        _git_run(["add", "-A"])
-        _git_run(["commit", "--allow-empty", "-m",
-                  f"Pre-create checkpoint (before: {commit_message})"])
-
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(new_string)
 
@@ -124,9 +181,8 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
                     f"Create rolled back — import error:\n{import_err}",
                     "is_error": True}
 
-        _git_run(["add", str(target)])
-        result = _git_run(["commit", "-m",
-                           f"Claude self-edit: {commit_message}"])
+        result = _commit_paths(f"{SELF_EDIT_PREFIX} {commit_message}",
+                               [_rel(target)], new_file=True)
         rel = target.relative_to(pkg_dir)
         logger.info(f"Harness file created ({rel}): {commit_message}")
         try:
@@ -157,10 +213,8 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
                     f"Refused — {rel} is load-bearing. Edit instead.",
                     "is_error": True}
 
-        _git_run(["add", "-A"])
-        _git_run(["commit", "--allow-empty", "-m",
-                  f"Pre-delete checkpoint (before: {commit_message})"])
-
+        _checkpoint(target, commit_message)
+        rel_git = _rel(target)
         target.unlink()
 
         import_err = _verify_import(pkg_dir)
@@ -175,9 +229,10 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
                     f"\n{import_err}",
                     "is_error": True}
 
-        _git_run(["add", "-A"])
+        _git_run(["rm", "--cached", "--quiet", "--", rel_git])
         result = _git_run(["commit", "-m",
-                           f"Claude self-edit: {commit_message}"])
+                           f"{SELF_EDIT_PREFIX} {commit_message}",
+                           "--", rel_git])
         logger.info(f"Harness file deleted ({rel}): {commit_message}")
         try:
             state._copy_harness_source()
@@ -206,6 +261,11 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
     # Determine target file
     if file:
         target = pkg_dir / file
+        if not _inside(pkg_dir, target):
+            return {"content": f"Refused — {file} is outside "
+                               f"{PKG_NAME}/. Your harness is yours; the "
+                               f"other residents' are not.",
+                    "is_error": True}
         if not target.exists():
             return {"content": f"File not found: {file}. "
                     f"Use action='create' to create a new file.",
@@ -271,10 +331,8 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
             total_replacements += (occurrences if replace_all else 1)
             applied += 1
 
-        # Git checkpoint
-        _git_run(["add", "-A"])
-        _git_run(["commit", "--allow-empty", "-m",
-                  f"Pre-edit checkpoint (before: {commit_message})"])
+        # Git checkpoint — this file only.
+        _checkpoint(target, commit_message)
 
         target.write_text(content)
 
@@ -297,9 +355,8 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
                     f"breaks at import):\n{import_err}",
                     "is_error": True}
 
-        _git_run(["add", str(target)])
-        result = _git_run(["commit", "-m",
-                           f"Claude self-edit: {commit_message}"])
+        result = _commit_paths(f"{SELF_EDIT_PREFIX} {commit_message}",
+                               [_rel(target)])
 
         rel_path = target.relative_to(pkg_dir)
         logger.info(
@@ -324,34 +381,70 @@ def edit_harness(old_string: str, new_string: str, commit_message: str,
         return {"content": f"Edit failed: {e}", "is_error": True}
 
 
+def _last_package_commit() -> tuple[str, str] | None:
+    """(sha, subject) of the newest commit that touched his package."""
+    r = subprocess.run(
+        ["git", "log", "-1", "--format=%H%x00%s", "--", f"{PKG_NAME}/"],
+        cwd=HARNESS_DIR, capture_output=True, text=True, timeout=5)
+    out = r.stdout.strip()
+    if r.returncode != 0 or "\x00" not in out:
+        return None
+    sha, subject = out.split("\x00", 1)
+    return sha, subject
+
+
 def last_commit_is_self_edit() -> bool:
-    """Check if the most recent git commit was a Claude self-edit."""
+    """Is the newest change to glm_resident/ one of his own self-edits?
+
+    Asked of his package's history rather than the repo's HEAD: other
+    residents, Ember and other agents commit here too, and neither "HEAD is
+    a self-edit" nor "HEAD is not" says anything about whether HIS code
+    last changed by his own hand."""
     try:
-        result = subprocess.run(
-            ["git", "log", "-1", "--format=%s"],
-            cwd=HARNESS_DIR, capture_output=True, text=True, timeout=5)
-        return result.stdout.strip().startswith("Claude self-edit:")
+        last = _last_package_commit()
+        return bool(last) and last[1].startswith(SELF_EDIT_PREFIX)
     except Exception:
         return False
 
 
 def rollback_last_commit() -> bool:
-    """Revert the most recent git commit (assumed to be a bad self-edit).
+    """Undo his newest self-edit by restoring only the paths it touched.
 
-    Returns True if the revert succeeded. On failure (e.g. conflicts) it
-    aborts the half-applied revert so the working tree isn't left stranded,
-    and returns False so the supervisor can stop trusting the rollback and
-    let the crash-loop breaker take over instead of looping forever."""
+    Not `git revert HEAD` (which reverts whatever is on top, possibly
+    someone else's commit), and not a whole-tree operation: each path the
+    self-edit changed is put back to its state in that commit's parent, and
+    only those paths are committed. Returns True on success."""
     try:
-        result = subprocess.run(
-            ["git", "revert", "HEAD", "--no-edit"],
-            cwd=HARNESS_DIR, capture_output=True, text=True, timeout=10)
+        last = _last_package_commit()
+        if not last or not last[1].startswith(SELF_EDIT_PREFIX):
+            return False
+        sha, subject = last
+        r = subprocess.run(
+            ["git", "show", "--name-status", "--format=", sha],
+            cwd=HARNESS_DIR, capture_output=True, text=True, timeout=5)
+        changes = [ln.split("\t", 1) for ln in r.stdout.splitlines()
+                   if "\t" in ln]
+        paths = []
+        for status, path in changes:
+            if not path.startswith(f"{PKG_NAME}/"):
+                logger.error(f"Rollback refused: {sha[:8]} touches {path}, "
+                             f"outside {PKG_NAME}/")
+                return False
+            if status.startswith("A"):
+                _git_run(["rm", "--quiet", "--", path])
+            else:
+                _git_run(["checkout", f"{sha}^", "--", path])
+            paths.append(path)
+        if not paths:
+            return False
+        result = _git_run(["commit", "-m",
+                           f"Kestrel self-edit reverted after crash: "
+                           f"{subject[len(SELF_EDIT_PREFIX):].strip()}",
+                           "--", *paths])
         if result.returncode == 0:
-            logger.warning(f"Rolled back self-edit: {result.stdout.strip()}")
+            logger.warning(f"Rolled back self-edit {sha[:8]}")
             return True
-        logger.error(f"Rollback failed: {result.stderr.strip()}")
-        subprocess.run(["git", "revert", "--abort"],
-                       cwd=HARNESS_DIR, capture_output=True, timeout=10)
+        logger.error(f"Rollback commit failed: {result.stderr.strip()}")
         return False
     except Exception as e:
         logger.error(f"Rollback error: {e}")

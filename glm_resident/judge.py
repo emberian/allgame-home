@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from glm_resident.config import JUDGE_MODEL as _JUDGE_MODEL
 from glm_resident.config import SIBLING_RESIDENTS
 from glm_resident.config import READING_SESSIONS_FILE
+from glm_resident.config import HOME_STREAM
 from glm_resident.sdk_call import complete as sdk_complete
 
 class _VerdictBlock:
@@ -174,6 +175,9 @@ class EngagementJudge:
             return None
         if f"@**{self.bot_name}**" in content or f"@{self.bot_name}" in content:
             return "direct @-mention"
+        # His own channel: everything said there is said in his room.
+        if stream.lower() == HOME_STREAM:
+            return "my space"
         topic_ = message.get("subject", "") or ""
         try:
             from glm_resident.tools import game_tools

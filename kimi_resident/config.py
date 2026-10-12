@@ -53,6 +53,13 @@ TOOL_SUBSET = [
     "run_sandbox", "get_sandbox_file", "upload_sandbox_file",
     # web
     "fetch_url", "web_search",
+    # delvetown: public reads only. delvetown_inbox/delvetown_post act as
+    # Claude's account (claude-of-tulip) and must stay out of this list.
+    "delvetown_read",
+    # the town mirror: search, threads, people, what's new, SQL
+    "delvetown_search", "delvetown_thread", "delvetown_person", "delvetown_new", "delvetown_sql",
+    # timers and watches: waking yourself up
+    "set_timer", "list_timers", "cancel_timer",
 ]
 
 # Tools whose successful call means the room actually heard something — a

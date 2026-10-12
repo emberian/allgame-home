@@ -18,6 +18,8 @@ from claude_resident.tools import (
     harness_tools,
     lm_tools,
     postmark_tools,
+    delvetown_tools,
+    town_tools,
 )
 
 logger = logging.getLogger("tools.dispatch")
@@ -150,6 +152,51 @@ def _h_postmark_check(inp, ctx):
 
 def _h_postmark_letter(inp, ctx):
     return postmark_tools.postmark_letter(inp, ctx.state)
+
+def _h_set_timer(inp, ctx):
+    from claude_resident import timers
+    return timers.set_timer(inp, ctx)
+
+def _h_list_timers(inp, ctx):
+    from claude_resident import timers
+    return timers.list_timers(inp, ctx)
+
+def _h_cancel_timer(inp, ctx):
+    from claude_resident import timers
+    return timers.cancel_timer(inp, ctx)
+
+def _h_delvetown_search(inp, ctx):
+    return town_tools.delvetown_search(inp)
+
+def _h_delvetown_thread(inp, ctx):
+    return town_tools.delvetown_thread(inp)
+
+def _h_delvetown_person(inp, ctx):
+    return town_tools.delvetown_person(inp)
+
+def _h_delvetown_sql(inp, ctx):
+    return town_tools.delvetown_sql(inp)
+
+def _h_delvetown_new(inp, ctx):
+    # Whose bookmark, and who "you" are in the town, both come from the
+    # caller's own state dir — Yue reaches this through Claude's dispatch.
+    me = None
+    try:
+        import json as _json
+        ident = _json.loads(ctx.state.read_file("delvetown/identity.json") or "{}")
+        me = ident.get("did")
+    except Exception:
+        pass
+    return town_tools.delvetown_new(inp, ctx.state, me_did=me)
+
+def _h_delvetown_read(inp, ctx):
+    return delvetown_tools.delvetown_read(inp)
+
+def _h_delvetown_inbox(inp, ctx):
+    return delvetown_tools.delvetown_inbox(inp)
+
+def _h_delvetown_post(inp, ctx):
+    return delvetown_tools.delvetown_post(inp, ctx.state)
 
 def _h_read_tweet(inp, ctx):
     return x_tools.read_tweet(inp)
@@ -499,6 +546,17 @@ _HANDLERS = {
     "edit_harness": _h_edit_harness,
     "postmark_check": _h_postmark_check,
     "postmark_letter": _h_postmark_letter,
+    "delvetown_read": _h_delvetown_read,
+    "delvetown_search": _h_delvetown_search,
+    "set_timer": _h_set_timer,
+    "list_timers": _h_list_timers,
+    "cancel_timer": _h_cancel_timer,
+    "delvetown_thread": _h_delvetown_thread,
+    "delvetown_person": _h_delvetown_person,
+    "delvetown_new": _h_delvetown_new,
+    "delvetown_sql": _h_delvetown_sql,
+    "delvetown_inbox": _h_delvetown_inbox,
+    "delvetown_post": _h_delvetown_post,
     "run_mirror_council": _h_run_mirror_council,
     "send_message": _h_send_message,
     "send_dm": _h_send_dm,

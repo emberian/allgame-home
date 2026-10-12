@@ -768,6 +768,16 @@ def run(args):
         args=(engine, state, args.streams, bot_name),
         daemon=True, name="solitude").start()
 
+    # Timers and watches she set for herself. Her set_timer runs in the MCP
+    # server (Claude's dispatch) and writes timers.json in HER state dir;
+    # this loop, in her own process, fires them.
+    from claude_resident.timers import start_timer_loop
+    start_timer_loop(
+        config.STATE_DIR,
+        lambda stream, topic, prompt: engine.respond(
+            "%s>%s" % (stream, topic), prompt, stream=stream, topic=topic,
+            sender=bot_name, solitude=True))
+
     logger.info("Listening (queue %s)", queue_id)
 
     try:

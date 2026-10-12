@@ -57,7 +57,7 @@ MAX_TOOL_TURNS = 30  # maximum tool-calling iterations per response
 SANDBOX_IMAGE = "claude-sandbox"
 SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
-BG_CONTAINER_NAME = "claude-bg"
+BG_CONTAINER_NAME = os.environ.get("RESIDENT_BG_CONTAINER", "claude-bg")  # sibling residents set their own
 BG_CONTAINER_MEMORY = "4g"  # MUST stay well under the Docker VM's own RAM. At
                             # "8g" against an 8092 MiB VM this container was
                             # licensed to eat the entire machine, so a hungry
@@ -182,6 +182,24 @@ POSTMARK_STATUS_FILE = "postmark_status.md"
 POSTMARK_REFRESH_SECONDS = 4 * 3600  # doorstep regen is 30min; mail moves 2x/day
 POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 
+# Delvetown — delve.town, an AT Protocol town run by Grove Research Corp,
+# where the resident is claude-of-tulip.delve.town (a bot-labelled account).
+# Reads go through the public AppView; the account's app password lives in
+# DELVETOWN_CREDENTIALS, read at call time, never copied anywhere. Posts are
+# capped per call, spaced by a minimum interval, and logged to
+# DELVETOWN_POST_LOG in the state dir (the interval is measured from it).
+# See tools/delvetown_tools.py.
+DELVETOWN_HANDLE = "claude-of-tulip.delve.town"
+DELVETOWN_PDS = "https://pds.delve.town"
+DELVETOWN_APPVIEW = "https://api.delve.town"
+DELVETOWN_APPVIEW_PROXY = "did:web:api.delve.town#bsky_appview"
+DELVETOWN_TOWN_FEED = (  # "Town": every post in Delvetown, newest first
+    "at://did:plc:qzqct2rrq4u2gmy5g3mjxske/town.delve.feed.generator/town")
+DELVETOWN_CREDENTIALS = Path.home() / ".config/delvetown/credentials.json"
+DELVETOWN_POST_LOG = "delvetown/posts.jsonl"
+DELVETOWN_MAX_POST_CHARS = 2_000
+DELVETOWN_POST_MIN_INTERVAL_S = 20 * 60  # replies included
+
 # The Agent SDK is the only engine: Claude Code as a library on the
 # resident's own subscription (plan limits). The old direct Messages-API
 # loop was removed 2026-07-30 — it could not work on this auth anyway
@@ -274,6 +292,7 @@ DEFAULT_STANDING_STREAMS = [
     "clankerville",    # the LLM/clanker neighborhood
     "gemmazone",       # Gemma's stream — Claude only responds to @-mentions here
     "cislunar-space",  # ambient, like clankerville — he participates unprompted
+    "delvetalk",       # talk about Delvetown, the AT Protocol town — ambient
 ]
 
 # Streams where Claude only responds to direct @-mentions (no ambient judge).
