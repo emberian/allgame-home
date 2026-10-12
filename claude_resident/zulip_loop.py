@@ -186,8 +186,16 @@ def backfill_history(resident):
                 f"Error backfilling #{stream}: {e}", exc_info=True)
 
 
-def replay_pending(resident):
-    """After restart, check for unreplied messages and process them.
+def replay_pending(resident) -> list[dict]:
+    """After restart, find unreplied messages and RETURN them, oldest first.
+
+    The caller registers the event queue first and seeds its pending
+    buffer with these. Answering them here, before registration, left
+    the resident deaf for the whole backlog (minutes, on 2026-10-12)
+    and silently DROPPED anything said in that window: the queue only
+    starts recording once it exists. Now the backlog goes through the
+    ordinary loop, batched per topic by the same _take_matching as
+    live messages.
 
     For each standing stream, fetches the tail of recent messages, groups
     by topic, and replays any topic where Claude wasn't the last speaker.
@@ -246,7 +254,7 @@ def replay_pending(resident):
 
     if not pending:
         logger.info("Replay: no unreplied messages found")
-        return
+        return []
 
     # A message can match more than one narrow; de-dup by id and replay in
     # chronological (id-ascending) order so threads are handled in sequence.
@@ -259,25 +267,9 @@ def replay_pending(resident):
         seen.add(mid)
         ordered.append(msg)
 
-    logger.info(f"Replay: {len(ordered)} unreplied message(s)")
-    # Group same-topic messages into one batched turn — a downtime backlog
-    # should get one coherent response, not one full response per message.
-    groups: dict[tuple[str, str], list[dict]] = {}
-    group_order: list[tuple[str, str]] = []
-    for msg in ordered:
-        key = _msg_key(msg)
-        if key not in groups:
-            groups[key] = []
-            group_order.append(key)
-        groups[key].append(msg)
-    for key in group_order:
-        msgs = groups[key]
-        logger.info(f"Replay: #{key[0]}>{key[1]} ({len(msgs)} message(s))")
-        try:
-            resident.handle_message(msgs[0], followups=msgs[1:])
-        except Exception as e:
-            logger.error(f"Replay error #{key[0]}>{key[1]}: {e}",
-                         exc_info=True)
+    logger.info(f"Replay: {len(ordered)} unreplied message(s) — queued "
+                f"behind registration, answered by the main loop")
+    return ordered
 
 
 def run(resident):
@@ -312,7 +304,6 @@ def run(resident):
         logger.warning(f"Failed to populate stream ID map: {e}")
 
     # Check for unreplied messages from before restart
-    replay_pending(resident)
 
     # Start metacognitive loop (gated by config flag)
     if METACOG_ENABLED:
@@ -366,10 +357,19 @@ def run(resident):
     # coalesced into ONE turn (handle_message batch) instead of each getting
     # its own full response. Reactions/typing still dispatch immediately.
     pending: deque = deque()
+    # The downtime backlog, collected only now that the queue is recording:
+    # anything said from here on arrives as an event, nothing falls between.
+    backlog = replay_pending(resident)
+    pending.extend(backlog)
+    replayed_ids = {m.get("id") for m in backlog}
 
     def _route_event(event):
         etype = event.get("type")
         if etype == "message":
+            # A message can be both in the replayed backlog and delivered as
+            # an event (it landed between the backlog fetch and registration).
+            if event["message"].get("id") in replayed_ids:
+                return
             pending.append(event["message"])
         elif etype == "reaction":
             resident._handle_reaction_event(event)

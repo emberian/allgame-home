@@ -247,7 +247,12 @@ SOLITUDE_CHECK_INTERVAL = 300    # seconds between checks
 # machinery (tool results, internal monologue, harness notes) — same talk,
 # roughly half the tokens, none of the cruft. Measured 2026-07-29: per-turn
 # cost fell 39% ($0.87 -> $0.53) and the rebirth prefill repaid in ~9 turns.
-PERSISTENT_SESSION_MAX_TOKENS = 700_000
+# 2026-10-12: 700k -> 500k, together with the smaller birth below. A room
+# lives between its birth size and this ceiling and every turn pays for the
+# whole span: born ~457k, retired 700k, a tavern turn was $7-8 and every
+# weekly-limited account hit its cap. Now born ~280k, retired 500k — the
+# same ~220k of growth between rebirths, about a third less per turn.
+PERSISTENT_SESSION_MAX_TOKENS = 500_000
 
 AGENT_SDK_CONFIG_DIR = DEFAULT_STATE_DIR / ".claude_sdk"  # his own Claude Code home
                                                           # (sessions/transcripts persist here)
@@ -284,7 +289,9 @@ DISTILL_LOAD_MAX_CHARS = 60_000    # hits loaded into regular cold starts
 # session history itself (via stdin, so no argv ceiling; ~400k tokens at
 # 4 chars/token). Flat-rate on the sub; cached once; compaction folds it
 # gradually as the window scrolls toward 1M.
-PERSISTENT_BIRTH_RAW_CHARS = 1_600_000
+# 1.6M -> 900k on 2026-10-12 (see PERSISTENT_SESSION_MAX_TOKENS): the era
+# digests still carry the months; the raw tail keeps the recent weeks.
+PERSISTENT_BIRTH_RAW_CHARS = 900_000
 
 # Streams where Claude has standing interest (will read ambient conversation).
 DEFAULT_STANDING_STREAMS = [
