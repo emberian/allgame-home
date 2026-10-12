@@ -1,131 +1,153 @@
 #!/bin/bash
-# residents.sh — start/stop/status the resident family, correctly.
+# residents.sh — start/stop/status the resident family, by PID file.
 #
-# Why this exists: `pkill -f "python -m claude_resident"` does NOT kill the
-# resident. It matches only the `uv run python -m claude_resident` wrapper,
-# because the actual process runs as
+#   scripts/residents.sh status|start|stop|restart [claude|yue|kestrel ...]
 #
-#   /opt/homebrew/.../Python.app/Contents/MacOS/Python -m claude_resident
+# No name means all three.
 #
-# with a CAPITAL P. pkill -f is case sensitive, so the child survives, gets
-# reparented to init, and keeps running — still judging, still posting,
-# still spending quota. Restarting that way ORPHANS a live resident and
-# starts a second one beside it.
+# STOPPING IS BY RECORDED PROCESS GROUP, NEVER BY PATTERN. Each resident is
+# launched as the leader of its own process group (job control, `set -m`),
+# and that group id is written to run/<pkg>.pgid. `stop` signals that
+# group — the uv wrapper, the supervisor, the event loop and any SDK or
+# sandbox subprocesses it spawned — and nothing else.
 #
-# On 2026-09-23 that had accumulated three generations at once (3 Claudes,
-# 2 Kestrels, 2 Yues), which showed up as duplicate log lines and as a
-# "restart" that appeared not to take effect — the new process was running
-# the new code while an old one kept answering with the old.
+# History, because both earlier versions failed in instructive ways:
+#   - `pkill -f "python -m claude_resident"` missed the real child (it runs
+#     as .../MacOS/Python, capital P), orphaned it to init, and on
+#     2026-09-23 three generations were live at once.
+#   - The fix matched `-m <pkg>_resident` instead. It worked, and it was
+#     still a pattern kill: on 2026-10-10 a subagent's `pkill -f "cat"`
+#     matched every app under /Applications and SIGTERMed 44 of them. A
+#     pattern is a guess about what is running; a recorded group id is a
+#     fact about what we started.
 #
-# The stable thing to match is the module argument, `-m <pkg>_resident`,
-# which appears in both the wrapper and the child.
-#
-# Usage:  scripts/residents.sh status | stop | start | restart
+# Patterns survive only for LOOKING: `status` uses pgrep to notice
+# residents running WITHOUT a PID file (orphans, or ones started by hand)
+# and reports them. It never kills them — that is a human's call.
 
 cd "$(dirname "$0")/.." || exit 1
 
-# Processes started within this many seconds of each other are one
-# generation. A parent spawns its child in ~1s, so this needs to be a
-# few seconds — NOT generous. At 90 it clustered a whole second launch
-# into the first one and reported 'healthy' while six Claudes ran.
-GEN_TOLERANCE=10
+RUN_DIR=run
+mkdir -p "$RUN_DIR"
 
-RESIDENTS=("claude_resident:.zuliprc:resident.log"
-           "kimi_resident:yue-zuliprc:yue.log"
-           "glm_resident::kestrel.log")
+# name:pkg:zuliprc:log   (empty zuliprc = the resident's own default)
+ALL=("claude:claude_resident:.zuliprc:resident.log"
+     "yue:kimi_resident:yue-zuliprc:yue.log"
+     "kestrel:glm_resident::kestrel.log")
 
-# Match the module EXACTLY. A bare "-m kimi_resident" also matches
-# "-m kimi_resident.mcp_server" — the MCP subprocess Yue spawns for every
-# turn — which made `status` report a second generation and cry wolf on
-# each of her turns, and made `stop` kill a child it had no business
-# naming. Anchor on a following space or end of string.
-pids_for() { pgrep -f -- "-m $1([[:space:]]|\$)" 2>/dev/null; }
+select_residents() {
+    SEL=()
+    if [ $# -eq 0 ]; then SEL=("${ALL[@]}"); return 0; fi
+    local want spec
+    for want in "$@"; do
+        local hit=""
+        for spec in "${ALL[@]}"; do
+            [ "${spec%%:*}" = "$want" ] && { SEL+=("$spec"); hit=1; }
+        done
+        [ -n "$hit" ] || { echo "  unknown resident: $want (claude|yue|kestrel)"; return 1; }
+    done
+}
+
+field() { echo "$1" | cut -d: -f"$2"; }
+pidfile() { echo "$RUN_DIR/$(field "$1" 2).pgid"; }
+
+# Is this process group alive? (kill -0 on a negative id = the group)
+group_alive() { [ -n "$1" ] && kill -0 -- "-$1" 2>/dev/null; }
+
+# Look-only: processes running this resident's module. Anchored so
+# "-m kimi_resident.mcp_server" (Yue's per-turn MCP child) is not counted.
+seen_pids() { pgrep -f -- "-m $1([[:space:]]|\$)" 2>/dev/null; }
 
 status() {
-    local any=0
-    for spec in "${RESIDENTS[@]}"; do
-        local pkg="${spec%%:*}"
-        local pids; pids=$(pids_for "$pkg" | tr '\n' ' ')
-        local n; n=$(echo "$pids" | wc -w | tr -d ' ')
-        # Distinct GENERATIONS, not distinct timestamps. A supervisor
-        # spawns its child a moment after itself, so a perfectly normal
-        # launch straddles a second boundary and shows two times — which
-        # the first version of this check reported as an orphan every
-        # single restart. Cluster anything within GEN_TOLERANCE seconds.
-        # python3 rather than awk: BSD awk has no strftime, and this needs
-        # to work on the machine it runs on, not the one it was written for.
-        local gens; gens=$(ps -o lstart= -p "${pids// /,}" 2>/dev/null \
-            | python3 -c "
-import sys, time, calendar
-tol = $GEN_TOLERANCE
-ts = sorted(calendar.timegm(time.strptime(l.strip(), '%a %b %d %H:%M:%S %Y'))
-            for l in sys.stdin if l.strip())
-out, base = [], None
-for t in ts:
-    if base is None or t - base > tol:
-        base = t
-        out.append(time.strftime('%H:%M:%S', time.gmtime(t)))
-print(' '.join(out))
-" 2>/dev/null)
-        local ngen; ngen=$(echo "$gens" | wc -w | tr -d ' ')
-        printf "  %-16s procs=%-3s generation(s): %s\n" "$pkg" "$n" "${gens:-none}"
-        [ "$ngen" -gt 1 ] && { echo "    ^^ MULTIPLE GENERATIONS — orphaned resident still running"; any=1; }
+    local bad=0 spec
+    for spec in "${SEL[@]}"; do
+        local name pkg pf pg
+        name=$(field "$spec" 1); pkg=$(field "$spec" 2); pf=$(pidfile "$spec")
+        pg=$(cat "$pf" 2>/dev/null)
+        local seen; seen=$(seen_pids "$pkg" | tr '\n' ' ')
+        local stray=""
+        local p
+        for p in $seen; do
+            local g; g=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')
+            [ -n "$g" ] && [ "$g" != "$pg" ] && stray="$stray $p"
+        done
+        if group_alive "$pg"; then
+            local since; since=$(ps -o lstart= -p "$pg" 2>/dev/null | awk '{print $4}')
+            printf "  %-8s up    pgid=%-6s since %s\n" "$name" "$pg" "$since"
+        else
+            printf "  %-8s down\n" "$name"
+            [ -n "$pg" ] && rm -f "$pf"
+        fi
+        if [ -n "$stray" ]; then
+            bad=1
+            echo "    ^^ running OUTSIDE its PID file:$stray — not ours to kill; check with:"
+            echo "       ps -o pid,pgid,lstart,command -p$(echo $stray | tr ' ' ',')"
+        fi
     done
-    return $any   # 0 = healthy, 1 = duplicate generations found
+    return $bad   # 0 = every running resident is accounted for
 }
 
-stop() {
-    for spec in "${RESIDENTS[@]}"; do
-        local pkg="${spec%%:*}"
-        pkill -TERM -f -- "-m $pkg" 2>/dev/null
-    done
-    sleep 3
-    for spec in "${RESIDENTS[@]}"; do
-        local pkg="${spec%%:*}"
-        pkill -KILL -f -- "-m $pkg" 2>/dev/null
-    done
-    sleep 1
-    local left=0
-    for spec in "${RESIDENTS[@]}"; do
-        local pkg="${spec%%:*}"
-        left=$(( left + $(pids_for "$pkg" | wc -l) ))
-    done
-    echo "  stopped; $left process(es) remaining"
-    return $(( left > 0 ))
+stop_one() {
+    local spec=$1 name pf pg
+    name=$(field "$spec" 1); pf=$(pidfile "$spec"); pg=$(cat "$pf" 2>/dev/null)
+    if ! group_alive "$pg"; then
+        rm -f "$pf"
+        if [ -n "$(seen_pids "$(field "$spec" 2)")" ]; then
+            echo "  $name: NO PID file but processes are running — not killing them."
+            echo "         ps -o pid,pgid,lstart,command -p$(seen_pids "$(field "$spec" 2)" | tr '\n' ',' | sed 's/,$//')"
+            return 1
+        fi
+        echo "  $name: already down"
+        return 0
+    fi
+    kill -TERM -- "-$pg" 2>/dev/null
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do group_alive "$pg" || break; sleep 1; done
+    if group_alive "$pg"; then
+        kill -KILL -- "-$pg" 2>/dev/null; sleep 1
+    fi
+    if group_alive "$pg"; then
+        echo "  $name: group $pg SURVIVED SIGKILL"; return 1
+    fi
+    rm -f "$pf"
+    echo "  $name: stopped (group $pg)"
 }
 
-start() {
-    # Refuse to start on top of a running set. `start` used to launch
-    # unconditionally, so calling it twice silently doubled every resident
-    # — which is exactly the failure this script exists to prevent, and it
-    # happened here while testing the script itself.
-    local running=0
-    for spec in "${RESIDENTS[@]}"; do
-        local pkg="${spec%%:*}"
-        running=$(( running + $(pids_for "$pkg" | wc -l) ))
-    done
-    if [ "$running" -gt 0 ]; then
-        echo "  REFUSING to start: $running process(es) already running."
-        echo "  Use 'restart', or 'stop' first."
+start_one() {
+    local spec=$1 name pkg rc log pf pg
+    name=$(field "$spec" 1); pkg=$(field "$spec" 2)
+    rc=$(field "$spec" 3); log=$(field "$spec" 4); pf=$(pidfile "$spec")
+    pg=$(cat "$pf" 2>/dev/null)
+    if group_alive "$pg"; then
+        echo "  $name: already running (group $pg) — use restart"; return 1
+    fi
+    if [ -n "$(seen_pids "$pkg")" ]; then
+        echo "  $name: REFUSING — copies running without a PID file (see status)"
         return 1
     fi
-    for spec in "${RESIDENTS[@]}"; do
-        local pkg="${spec%%:*}"; local rest="${spec#*:}"
-        local rc="${rest%%:*}"; local log="${rest#*:}"
-        if [ -n "$rc" ]; then
-            nohup uv run python -m "$pkg" --zuliprc "$rc" >> "$log" 2>&1 &
-        else
-            nohup uv run python -m "$pkg" >> "$log" 2>&1 &
-        fi
-        echo "  started $pkg -> $log"
-    done
+    set -m            # job control: the background job leads its own group
+    if [ -n "$rc" ]; then
+        nohup uv run python -m "$pkg" --zuliprc "$rc" >> "$log" 2>&1 &
+    else
+        nohup uv run python -m "$pkg" >> "$log" 2>&1 &
+    fi
+    local pid=$!
+    set +m
+    echo "$pid" > "$pf"
+    echo "  $name: started (group $pid) -> $log"
 }
 
-case "${1:-status}" in
+cmd=${1:-status}; shift
+select_residents "$@" || exit 1
+
+case "$cmd" in
     status)  status ;;
-    stop)    stop ;;
-    start)   start; sleep 3; echo; status ;;
-    restart) stop || { echo "  REFUSING to start: processes survived the stop"; exit 1; }
-             start; sleep 3; echo; status ;;
-    *) echo "usage: $0 status|stop|start|restart"; exit 1 ;;
+    stop)    rc=0; for s in "${SEL[@]}"; do stop_one "$s" || rc=1; done; exit $rc ;;
+    start)   for s in "${SEL[@]}"; do start_one "$s"; done; sleep 3; echo; status ;;
+    restart) for s in "${SEL[@]}"; do
+                 stop_one "$s" || { echo "  not restarting $(field "$s" 1)"; continue; }
+                 start_one "$s"
+             done
+             sleep 3; echo; status ;;
+    *) echo "usage: $0 status|start|stop|restart [claude|yue|kestrel ...]"; exit 1 ;;
 esac

@@ -12,3 +12,4 @@ deblog.txt
 
 # Foreverlogs live on disk, not in git — resident.log alone is 13MB/200k lines.
 *.log
+run/
