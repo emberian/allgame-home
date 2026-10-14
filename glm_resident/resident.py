@@ -630,18 +630,22 @@ class GLMResident:
     # ------------------------------------------------------------------
 
     def _start_typing(self, stream: str, topic: str,
-                      max_seconds: float = 300.0,
+                      stall_seconds: float = 300.0,
                       floor_holder: str | None = None) -> threading.Event:
         """Show the typing indicator and keep it alive until stopped.
 
         Zulip expires an indicator ~15s after the last start event, so it
-        needs a pulse. The deadline is a backstop: if the caller dies
-        before clearing the event, the thread stops on its own instead of
-        leaving the room with a permanently typing resident.
+        needs a pulse. It stops on SILENCE, not on the clock: the engine
+        bumps last_progress on every model message and tool call, and the
+        indicator gives up only after stall_seconds with no sign of life —
+        the case a backstop exists for (a stuck turn). It used to give up
+        after a flat 300s, so a long working turn — seven minutes of sandbox
+        analysis, 2026-10-14 — went quiet for its last two minutes and the
+        room concluded he was down.
         """
         self._send_typing(stream, topic, "start")
         stop = threading.Event()
-        deadline = time.time() + max_seconds
+        started = time.time()
 
         def _pulse():
             # Tick every 3s so a released floor is noticed promptly, but
@@ -665,10 +669,12 @@ class GLMResident:
                     break
                 if tick % 3:
                     continue
-                if time.time() > deadline:
+                alive = max(started, getattr(self.agent_engine,
+                                             "last_progress", 0) or 0)
+                if time.time() - alive > stall_seconds:
                     self.logger.warning(
-                        f"Typing indicator for #{stream}>{topic} hit its "
-                        f"{max_seconds:.0f}s cap — stopping")
+                        f"Typing indicator for #{stream}>{topic}: no progress "
+                        f"for {stall_seconds:.0f}s — stopping")
                     break
                 self._send_typing(stream, topic, "start")
             self._send_typing(stream, topic, "stop")

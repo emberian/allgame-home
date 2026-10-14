@@ -307,14 +307,18 @@ class AgentEngine:
                                     "turn, and it landed. Do NOT re-send. "
                                     "End the turn with a brief plain-text "
                                     "line instead."}], "is_error": True}
+                        self.last_progress = time.time()
                         result = await asyncio.to_thread(
                             execute_tool, name, args, self._ctx)
+                        self.last_progress = time.time()
                         if not result.get("is_error"):
                             self._turn_sends.append(content)
                             self._turn_visible = True
                         return _mcp_result(result)
+                    self.last_progress = time.time()
                     result = await asyncio.to_thread(
                         execute_tool, name, args, self._ctx)
+                    self.last_progress = time.time()
                     if (name in VISIBLE_TOOLS
                             and not result.get("is_error")):
                         self._turn_visible = True
@@ -458,6 +462,10 @@ class AgentEngine:
                 f"(≈{len(birth_payload) // 4 // 1000}k tokens)")
 
         self._turn_sends = []
+        # Heartbeat for the typing indicator: bumped by every model
+        # message and every tool call, so "typing" lasts exactly as
+        # long as the turn is visibly doing something.
+        self.last_progress = time.time()
         self._turn_visible = False
         self._last_context_tokens = 0
         ctx = ToolContext(
@@ -837,6 +845,7 @@ class AgentEngine:
         assistant_record: list[dict] = []
         turn = 0
         async for msg in self._query_surfacing_limits(prompt_text, options):
+            self.last_progress = time.time()
             if isinstance(msg, AssistantMessage):
                 blocks = []
                 for block in msg.content:
