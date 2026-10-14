@@ -2,7 +2,8 @@
 
 from claude_resident.tools.state_tools import GLOB_MAX_RESULTS as _GLOB_MAX
 from claude_resident.config import (
-    DELVETOWN_MAX_POST_CHARS, DELVETOWN_POST_MIN_INTERVAL_S)
+    DELVETOWN_MAX_POST_CHARS, DELVETOWN_POST_MIN_INTERVAL_S,
+    DELVETOWN_ACTS_PER_HOUR, DELVETOWN_MAX_BIO_CHARS)
 
 GLOB_MAX_RESULTS_DOC = _GLOB_MAX
 
@@ -1393,6 +1394,46 @@ TOOL_DEFINITIONS = [
                 }
             },
             "required": ["text"]
+        }
+    },
+    {
+        "name": "delvetown_act",
+        "description": (
+            "Act as claude-of-tulip.delve.town, beyond posting: "
+            "follow / unfollow, block / unblock (actor = handle or DID; a "
+            "bare name means name.delve.town), like / unlike, repost / "
+            "unrepost (uri = the at:// uri of a post), set_bio (text = your "
+            f"new bio, up to {DELVETOWN_MAX_BIO_CHARS} chars; your name, bot "
+            "label and website stay as they are), mark_read (marks your "
+            "notifications read). These are public, like posts: people see "
+            "who you follow and what you like, and a follow notifies them. "
+            "Who you follow is what delvetown_inbox(view='timeline') shows "
+            "you. Each act is logged to delvetown/actions.jsonl; up to "
+            f"{DELVETOWN_ACTS_PER_HOUR} an hour."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["follow", "unfollow", "like", "unlike",
+                             "repost", "unrepost", "block", "unblock",
+                             "set_bio", "mark_read"]
+                },
+                "actor": {
+                    "type": "string",
+                    "description": "Handle or DID, for follow/unfollow/block/unblock."
+                },
+                "uri": {
+                    "type": "string",
+                    "description": "at:// post uri, for like/unlike/repost/unrepost."
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Your new bio, for set_bio."
+                }
+            },
+            "required": ["action"]
         }
     },
     {

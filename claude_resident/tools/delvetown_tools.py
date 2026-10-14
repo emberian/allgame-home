@@ -6,12 +6,15 @@ pds.delve.town, an AppView at api.delve.town, records in the town.delve.*
 namespace (Bluesky's app.bsky.* shapes, renamed). The resident is
 claude-of-tulip.delve.town there, a bot-labelled account.
 
-Three tools, split by what they touch:
+Four tools, split by what they touch:
   delvetown_read   public reads through the AppView — the Town feed, one
                    person's posts, a thread, search. No account involved,
                    which is why it is the one other residents may be given.
   delvetown_inbox  the account's own timeline and notifications.
   delvetown_post   a post or a reply, as claude-of-tulip.
+  delvetown_act    everything else the account does: follow, like, repost,
+                   block (and their undos), its own bio, marking
+                   notifications read.
 
 The credentials live outside the repo and the state dir, in
 DELVETOWN_CREDENTIALS, and are read at call time: the account can be set
@@ -41,6 +44,9 @@ from claude_resident.config import (
     DELVETOWN_POST_LOG,
     DELVETOWN_MAX_POST_CHARS,
     DELVETOWN_POST_MIN_INTERVAL_S,
+    DELVETOWN_ACT_LOG,
+    DELVETOWN_ACTS_PER_HOUR,
+    DELVETOWN_MAX_BIO_CHARS,
 )
 
 logger = logging.getLogger("tools.delvetown")
@@ -504,3 +510,137 @@ def delvetown_post(inp: dict, state) -> dict:
                  f"plain text: {', '.join(unresolved)}")
     return {"content": f"Posted as @{s['handle']}: {uri}\n"
             f"{_web_url(s['handle'], uri)}{note}"}
+
+
+# ---------------------------------------------------------------------------
+# Acting as the account: follow, like, repost, block, bio, mark read
+# ---------------------------------------------------------------------------
+
+PROFILE_COLLECTION = "town.delve.actor.profile"
+# action -> (record collection, what it points at, viewer field holding the
+# record's uri once it exists — the undo deletes exactly that record)
+_RECORD_ACTS = {
+    "follow": ("town.delve.graph.follow", "actor", "following"),
+    "block": ("town.delve.graph.block", "actor", "blocking"),
+    "like": ("town.delve.feed.like", "post", "like"),
+    "repost": ("town.delve.feed.repost", "post", "repost"),
+}
+_UNDO = {"unfollow": "follow", "unblock": "block", "unlike": "like",
+         "unrepost": "repost"}
+ACTIONS = sorted([*_RECORD_ACTS, *_UNDO, "set_bio", "mark_read"])
+
+
+def _now_iso() -> str:
+    return (datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"))
+
+
+def _acts_last_hour(state) -> int:
+    cutoff = time.time() - 3600
+    n = 0
+    for line in (state.read_file(DELVETOWN_ACT_LOG) or "").strip().splitlines():
+        try:
+            if datetime.fromisoformat(json.loads(line)["at"]).timestamp() > cutoff:
+                n += 1
+        except Exception:
+            continue
+    return n
+
+
+def _target(kind: str, inp: dict) -> tuple[dict, str]:
+    """(subject, label) — the actor's profile view or the post view, read with
+    the account's own viewer state."""
+    if kind == "actor":
+        actor = (inp.get("actor") or "").strip().lstrip("@")
+        if not actor:
+            raise ValueError("this action needs actor (a handle or DID).")
+        if not actor.startswith("did:") and "." not in actor:
+            actor += TOWN_SUFFIX
+        view = _authed("GET", "town.delve.actor.getProfile",
+                       params={"actor": actor}, proxy=True)
+        return view, f"@{view.get('handle', actor)}"
+    uri = (inp.get("uri") or "").strip()
+    if not uri.startswith("at://"):
+        raise ValueError("this action needs uri (the at:// uri of a post).")
+    posts = _authed("GET", "town.delve.feed.getPosts", params={"uris": uri},
+                    proxy=True).get("posts") or []
+    if not posts:
+        raise ValueError(f"post not found: {uri}")
+    author = (posts[0].get("author") or {}).get("handle", "?")
+    return posts[0], f"@{author}'s post {uri}"
+
+
+def _set_bio(text: str, s: dict) -> str:
+    text = text.strip()
+    if len(text) > DELVETOWN_MAX_BIO_CHARS:
+        raise ValueError(f"bio is {len(text)} chars; the cap is "
+                         f"{DELVETOWN_MAX_BIO_CHARS}.")
+    cur = _authed("GET", "com.atproto.repo.getRecord",
+                  params={"repo": s["did"], "collection": PROFILE_COLLECTION,
+                          "rkey": "self"})
+    record = dict(cur["value"])
+    old = record.get("description", "")
+    record["description"] = text
+    # Only the bio changes: the name, the bot label and the website stay.
+    _authed("POST", "com.atproto.repo.putRecord",
+            body={"repo": s["did"], "collection": PROFILE_COLLECTION,
+                  "rkey": "self", "record": record, "swapRecord": cur["cid"]})
+    return f"Bio updated.\nwas: {old}\nnow: {text}"
+
+
+def delvetown_act(inp: dict, state) -> dict:
+    """Tool: one act as the account. Logged; budgeted per hour."""
+    action = (inp.get("action") or "").strip()
+    if action not in ACTIONS:
+        return {"content": f"Unknown action {action!r}. One of: "
+                f"{', '.join(ACTIONS)}.", "is_error": True}
+    if action != "mark_read" and _acts_last_hour(state) >= DELVETOWN_ACTS_PER_HOUR:
+        return {"content": f"Not done: that would be more than "
+                f"{DELVETOWN_ACTS_PER_HOUR} acts in an hour. Leave it a while; "
+                "the budget refills as the hour rolls over.", "is_error": True}
+    try:
+        s = _login()
+        if action == "mark_read":
+            _authed("POST", "town.delve.notification.updateSeen",
+                    body={"seenAt": _now_iso()}, proxy=True)
+            return {"content": "Notifications marked read."}
+        if action == "set_bio":
+            msg = _set_bio(inp.get("text") or "", s)
+            label, uri = "your bio", None
+        else:
+            base = _UNDO.get(action, action)
+            collection, kind, field = _RECORD_ACTS[base]
+            view, label = _target(kind, inp)
+            if kind == "actor" and view.get("did") == s["did"]:
+                return {"content": "That is your own account.", "is_error": True}
+            existing = (view.get("viewer") or {}).get(field)
+            if action in _UNDO:
+                if not existing:
+                    return {"content": f"Nothing to undo: you have no {base} "
+                            f"on {label}."}
+                _authed("POST", "com.atproto.repo.deleteRecord",
+                        body={"repo": s["did"], "collection": collection,
+                              "rkey": existing.rsplit("/", 1)[-1]})
+                uri, msg = existing, f"Done: {action} {label}."
+            else:
+                if existing:
+                    return {"content": f"Already done: you {base} {label} "
+                            f"({existing})."}
+                subject = (view["did"] if kind == "actor"
+                           else {"uri": view["uri"], "cid": view["cid"]})
+                out = _authed("POST", "com.atproto.repo.createRecord",
+                              body={"repo": s["did"], "collection": collection,
+                                    "record": {"$type": collection,
+                                               "subject": subject,
+                                               "createdAt": _now_iso()}})
+                uri, msg = out.get("uri"), f"Done: {action} {label}."
+    except Exception as e:
+        logger.warning(f"delvetown_act ({action}) failed: {e}")
+        return {"content": f"Delvetown {action} failed: {e}", "is_error": True}
+    state.append_file(DELVETOWN_ACT_LOG, json.dumps({
+        "at": datetime.now(timezone.utc).isoformat(), "action": action,
+        "target": label, "uri": uri,
+        **({"text": inp.get("text")} if action == "set_bio" else {})},
+        ensure_ascii=False) + "\n")
+    logger.info(f"Delvetown act: {action} {label}")
+    return {"content": msg}

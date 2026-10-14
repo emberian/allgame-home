@@ -199,6 +199,12 @@ DELVETOWN_CREDENTIALS = Path.home() / ".config/delvetown/credentials.json"
 DELVETOWN_POST_LOG = "delvetown/posts.jsonl"
 DELVETOWN_MAX_POST_CHARS = 2_000
 DELVETOWN_POST_MIN_INTERVAL_S = 20 * 60  # replies included
+# delvetown_act (follow, like, repost, block, bio, mark read): every act is
+# logged, and a generous hourly budget keeps a runaway loop from
+# spraying the town with follows or likes.
+DELVETOWN_ACT_LOG = "delvetown/actions.jsonl"
+DELVETOWN_ACTS_PER_HOUR = 60
+DELVETOWN_MAX_BIO_CHARS = 256
 
 # The Agent SDK is the only engine: Claude Code as a library on the
 # resident's own subscription (plan limits). The old direct Messages-API

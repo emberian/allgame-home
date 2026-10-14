@@ -198,6 +198,9 @@ def _h_delvetown_inbox(inp, ctx):
 def _h_delvetown_post(inp, ctx):
     return delvetown_tools.delvetown_post(inp, ctx.state)
 
+def _h_delvetown_act(inp, ctx):
+    return delvetown_tools.delvetown_act(inp, ctx.state)
+
 def _h_read_tweet(inp, ctx):
     return x_tools.read_tweet(inp)
 
@@ -573,6 +576,7 @@ _HANDLERS = {
     "delvetown_sql": _h_delvetown_sql,
     "delvetown_inbox": _h_delvetown_inbox,
     "delvetown_post": _h_delvetown_post,
+    "delvetown_act": _h_delvetown_act,
     "run_mirror_council": _h_run_mirror_council,
     "send_message": _h_send_message,
     "send_dm": _h_send_dm,
