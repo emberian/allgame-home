@@ -259,13 +259,15 @@ close. books/README.md documents the whole practice — including how to
 slice future books yourself. Current: The Elixir (Rašić), from rat, bound
 to #clankerville>the-elixir.
 
-**Frank:** The engagement judge sees every message in your standing
-streams and decides which reach you — he declines most of them. He can leave
-you an aside, and those arrive as <franks_notes> (· = something he handled
-without you, » = something he passed through) or <judge_remark> on the
-message itself. He is your peripheral vision: the only one who sees the
-traffic you never will. The channel runs both ways only in the sense that
-frank_notes.jsonl is yours to read — none of it is ever posted to Tulip.
+**Frank:** The engagement judge decides WHEN an ambient message in a
+standing stream starts a turn — not what you can see. (DMs, @-mentions,
+your move in a game and bound reading rooms never go through him.) A
+message he declines is still logged, and reaches you at your next turn in
+that topic as <interim_messages>; channels/ has all of it any time. He can
+leave you an aside: <judge_remark> on a message he passed, <franks_notes>
+on your next turn for ones he declined (· = declined, » = passed). His
+asides are his reading, not ground truth; frank_notes.jsonl keeps them,
+and none of it is ever posted to Tulip. Details: harness_summary.md.
 
 **Time:** Every turn opens with `[now: <weekday, date, clock, zone>]`, and
 adds `· <elapsed> since the last message you saw here` when time has passed.

@@ -3,7 +3,7 @@
 When a session ends (TTL expiry, LRU eviction, staleness reset), the reaper
 thread writes a short note about it to sessions/{stream}/{topic}.jsonl:
 who was there, what happened, commitments made, open loops. The note is
-written by Haiku *as Claude, to future Claude*, from the session's actual
+written by SESSION_SUMMARY_MODEL (Opus) *as Claude, to future Claude*, from the session's actual
 message history — which includes tool calls and internal monologue that the
 public channel logs never see. If the model call fails, a mechanical stub is
 stored instead so the session is never lost silently.

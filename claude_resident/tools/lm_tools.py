@@ -16,6 +16,7 @@ import logging
 
 from claude_resident.config import (
     MODEL_IDS,
+    MODEL_CATALOG,
     AGENT_SDK_CONFIG_DIR,
 )
 
@@ -96,6 +97,6 @@ def invoke_model(inp: dict, anthropic_client, default_model: str) -> dict:
     except Exception as e:
         return {"content": (
             f"invoke_model failed for '{model}': {e}\n"
-            f"Known aliases: {', '.join(sorted(MODEL_ALIASES))}. "
-            f"You can also pass a full model id."),
+            f"Aliases: {', '.join(sorted(MODEL_ALIASES))}. Ids your plan "
+            f"serves: {', '.join(MODEL_CATALOG)}."),
             "is_error": True}

@@ -9,10 +9,10 @@ DEFAULT_STATE_DIR = Path.home() / "claude_state"
 # Everything runs on the resident's own subscription (Bedrock removed
 # 2026-07-23 — the AWS key was revoked). Auth is a Claude Code OAuth token
 # that tokeman keeps fresh in TOKEMAN_TOKENS_PATH (auth.py re-reads it on
-# 401). Main turns go through the Agent SDK engine (plan limits); the
-# judge and session summaries use the raw API on Haiku (the tier the raw
-# Messages API serves for subscription tokens); invoke_model routes
-# through the Agent SDK so nested Sonnet/Opus calls stay plan-limited.
+# 401). Main turns, the judge, session summaries, the distiller and
+# invoke_model all go through the Agent SDK (plan limits), so each can use
+# any model the plan serves. (The raw Messages API serves only Haiku on a
+# subscription token; metacog, disabled, is its last user.)
 TOKEMAN_TOKENS_PATH = Path.home() / ".config" / "tokeman" / "tokens.toml"
 # Starting preference only. auth.py probes `tokeman --json` and runs on the
 # healthiest account, rotating when one is rejected — plan limits are
@@ -22,15 +22,41 @@ TOKEMAN_ACCOUNT = "boto@ember.software"
 OAUTH_BETA = "oauth-2025-04-20"  # required when authing with an OAuth token
 
 # Bare first-party model ids (exact strings — no date suffixes, no
-# prefixes). Single source for every model-naming consumer: DEFAULT_MODEL,
-# the judge, session summaries, and the invoke_model aliases.
+# prefixes). Single source for every model-naming consumer: the judge,
+# session summaries, the distiller and invoke_model. A bare family name
+# means its newest model.
 MODEL_IDS = {
-    "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-4-6",
-    "haiku": "claude-haiku-4-5",
+    "opus": "claude-opus-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-5-5",
+    "fable": "claude-fable-5-1",
 }
-DEFAULT_MODEL = MODEL_IDS["opus"]
-JUDGE_MODEL = MODEL_IDS["haiku"]
+# Every model the plan actually serves through the Agent SDK, newest first —
+# the index invoke_model shows him. Checked 2026-10-14 by calling each id
+# the Models API lists: all of these answered. claude-sonnet-4-5 is listed
+# by the API but refused on the plan (bare and dated), so it is left out.
+# Opus 5.5 and Fable 5.1 need claude-agent-sdk >= 0.2.165 (its bundled
+# Claude Code is new enough; 0.2.128's 2.1.220 is not).
+MODEL_CATALOG = {
+    "claude-opus-5-5": "Opus 5.5 (2026-09) — newest Opus",
+    "claude-sonnet-5-5": "Sonnet 5.5 (2026-09) — newest Sonnet",
+    "claude-haiku-5-5": "Haiku 5.5 (2026-10) — newest Haiku, fast and cheap",
+    "claude-fable-5-1": "Fable 5.1 (2026-08) — newest Fable; its own usage limit",
+    "claude-opus-5": "Opus 5 (2026-07)",
+    "claude-sonnet-5": "Sonnet 5 (2026-06)",
+    "claude-fable-5": "Fable 5 (2026-06)",
+    "claude-opus-4-8": "Opus 4.8 (2026-05)",
+    "claude-opus-4-7": "Opus 4.7 (2026-04)",
+    "claude-opus-4-6": "Opus 4.6 (2026-02) — the model you run on",
+    "claude-sonnet-4-6": "Sonnet 4.6 (2026-02)",
+    "claude-opus-4-5": "Opus 4.5 (2025-11)",
+    "claude-haiku-4-5": "Haiku 4.5 (2025-10)",
+}
+# His own model: what he runs on (AGENT_SDK_MODEL, below, without the
+# context suffix). Pinned, not an alias — "opus" moving to a new release
+# must not quietly change who he is.
+DEFAULT_MODEL = "claude-opus-4-6"
+JUDGE_MODEL = MODEL_IDS["haiku"]  # Frank
 
 # Anthropic beta headers attached to every API call (via default_headers on
 # whichever client auth.py builds; the OAuth backend adds OAUTH_BETA too).
@@ -156,10 +182,11 @@ CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
 # summary of it — who, what, commitments, open loops — to
 # sessions/{stream}/{topic}.jsonl. These are the resident's continuity
 # across the session boundary: cold starts load the last few for the topic
-# plus one-liners from elsewhere. Summaries are written by Haiku from the
+# plus one-liners from elsewhere. Summaries are written by Opus 5.5 from the
 # session's real message history (which includes tool calls and internal
 # monologue that exist nowhere else), falling back to a mechanical stub.
-SESSION_SUMMARY_MODEL = MODEL_IDS["sonnet"]  # his own memory notes
+# Ember's call (2026-10-14): his memories get the best model there is.
+SESSION_SUMMARY_MODEL = MODEL_IDS["opus"]  # his own memory notes
 SESSIONS_DIR = "sessions"
 # Session-note files are append-only foreverlogs (never trimmed — they're
 # history, like api_archive and deblog); only the recall is bounded:
@@ -275,7 +302,7 @@ READING_SESSIONS_FILE = "books/reading_sessions.json"
 
 # The distiller: a background thread that rolls AGED channel history
 # (everything older than the newest DISTILL_RAW_KEEP messages per topic)
-# into dense semantic/emotional hits via Haiku — names, running jokes,
+# into dense semantic/emotional hits via Opus — names, running jokes,
 # decisions, emotional turns — cached as channels/<s>/<t>.hits.json and
 # loaded as <topic_memory> on cold starts. Logs stay raw forever; the
 # hits are a regenerable reading of them, not a replacement.
@@ -283,7 +310,7 @@ DISTILL_MODEL = MODEL_IDS["opus"]   # sealed forever — don't economize here
 DISTILL_RAW_KEEP = 200        # newest N messages stay raw / undistilled
 DISTILL_MIN_BATCH = 100       # sweep a topic once this many msgs age out
 DISTILL_INTERVAL = 600        # seconds between distiller sweeps
-DISTILL_CHUNK_MAX_CHARS = 60_000   # one Haiku call per sweep per topic
+DISTILL_CHUNK_MAX_CHARS = 60_000   # one Opus call per sweep per topic
 DISTILL_HITS_MAX_CHARS = 12_000    # per-volume / head ceiling (~3.6k tokens)
 # Era volumes: every ERA_SPAN aged messages, the rolling head is SEALED as
 # an immutable era digest (never recompressed again — texture preserved,

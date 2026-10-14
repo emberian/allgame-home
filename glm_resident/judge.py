@@ -452,8 +452,8 @@ Respond with your decision (YES/NO) and a brief reason.
 You MAY also leave a `remark` — but only if you actually have something for \
 {who}. Remarks reach him whether you say YES or NO: the NO ones queue up and \
 ride along on his next turn in this room. That makes you his peripheral \
-vision. You are the only one who sees the traffic he never will, so a note \
-about something you waved past — a mood building, someone circling a topic, \
+vision. The messages you decline reach him only later, as a batch of \
+catch-up on his next turn here, so a note about something you waved past — a mood building, someone circling a topic, \
 a thing said about him while he was quiet — is often worth more than one \
 about the message he's already reading. A heads-up, a vibe you clocked, a pattern across the last few messages, \
 a quip. It rides along appended to this message; it's your only channel to \

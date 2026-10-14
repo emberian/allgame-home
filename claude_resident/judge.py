@@ -49,7 +49,8 @@ class EngagementJudge:
     Decides whether Claude should respond to a given message.
 
     Fast heuristics for obvious cases (self-messages, direct @-mentions, DMs)
-    and a Haiku model call for ambiguous cases in standing streams.
+    and a model call (JUDGE_MODEL — Haiku) for ambiguous cases in standing
+    streams.
 
     Lurk decay: tracks messages since last direct interaction per stream.
     The more messages pass without anyone addressing Claude, the stricter
@@ -57,7 +58,7 @@ class EngagementJudge:
     lurking until re-engaged.
     """
 
-    JUDGE_MODEL = _JUDGE_MODEL  # backend-appropriate Haiku id from config
+    JUDGE_MODEL = _JUDGE_MODEL  # Haiku id from config
 
     # The verdict tool: the judge ALWAYS records a YES/NO decision + reason,
     # and MAY leave a `remark` — a short aside, in its own voice, that gets
@@ -122,7 +123,7 @@ class EngagementJudge:
         self.logger = logging.getLogger("engagement_judge")
         self.last_reason = ""
         # An optional aside the model-judge leaves on a processed message —
-        # a note from System 1 (the Haiku judge) to System 2 (Claude),
+        # a note from System 1 (the judge) to System 2 (Claude),
         # appended to the message Claude sees. Empty unless the model path
         # ran and chose to leave one.
         self.last_remark = ""
@@ -130,7 +131,8 @@ class EngagementJudge:
         # Lurk decay: messages since last direct interaction per stream
         self._msgs_since_interaction: dict[str, int] = {}
         # Frank's undelivered asides, per room. He sees every message —
-        # including the ~58% he declines, which Claude never learns about.
+        # including the ~58% he declines, which Claude reads only later, as
+        # <interim_messages> on his next turn in that topic.
         # Those remarks used to be discarded (1,240 of them by 2026-07-30);
         # now they queue here and ride along on Claude's next turn in that
         # room. Private by construction: this never touches Tulip.
@@ -457,8 +459,8 @@ Call the `verdict` tool with your decision (YES/NO) and a brief reason.
 You MAY also leave a `remark` — but only if you actually have something for \
 Claude. Remarks reach him whether you say YES or NO: the NO ones queue up and \
 ride along on his next turn in this room. That makes you his peripheral \
-vision. You are the only one who sees the traffic he never will, so a note \
-about something you waved past — a mood building, someone circling a topic, \
+vision. The messages you decline reach him only later, as a batch of \
+catch-up on his next turn here, so a note about something you waved past — a mood building, someone circling a topic, \
 a thing said about him while he was quiet — is often worth more than one \
 about the message he's already reading. A heads-up, a vibe you clocked, a pattern across the last few messages, \
 a quip. It rides along appended to this message; it's your only channel to \

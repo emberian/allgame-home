@@ -4,7 +4,7 @@ Channel logs are foreverlogs; raw loading is bounded by token budgets. What
 scrolls past the raw window shouldn't just vanish from the resident's felt
 sense of a room — so a background thread periodically compresses the AGED
 portion of each topic (everything older than the newest DISTILL_RAW_KEEP
-messages) into dense hits via Haiku: names, running jokes, decisions,
+messages) into dense hits via DISTILL_MODEL (Opus): names, running jokes, decisions,
 emotional turns, notable phrasing. The digest is cached per topic as
 channels/<stream>/<topic>.hits.json and loaded as <topic_memory> on cold
 starts, before the raw tail.

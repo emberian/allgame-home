@@ -395,8 +395,9 @@ class ClaudeResident:
             if interim:
                 content_blocks.append({"type": "text", "text":
                     "<interim_messages>\nSaid in this topic since your last "
-                    "turn (you already chose not to reply to these — context "
-                    "only):\n" + interim + "\n</interim_messages>"})
+                    "turn — Frank didn't wake you for these, so this is your "
+                    "first look; answer any that still want it:\n"
+                    + interim + "\n</interim_messages>"})
         # --- Temporal header ---------------------------------------------
         # He had no clock at all: turn prompts carried no timestamp and the
         # system prompt no date, so in a persistent session "five minutes
@@ -454,13 +455,12 @@ class ClaudeResident:
             rxn_text = _summarize_reactions(self._pending_reactions.pop(key))
             content_blocks = [{"type": "text", "text": rxn_text}] + content_blocks
 
-        # System-1 backchannel: the Haiku engagement judge let this message
+        # System-1 backchannel: the engagement judge let this message
         # through and left a note. Appended after the message so it reads as a
         # margin note on what was just received — your reflex layer radioing in.
-        # Frank's asides from messages you never saw — he watches the room
-        # continuously and declines most of it on your behalf; these are the
-        # notes he left about what he waved past. Private channel: context
-        # only, never posted.
+        # Frank's asides on messages he didn't wake Claude for. The
+        # messages themselves arrive as <interim_messages> above; these are
+        # only his remarks. Private channel: context only, never posted.
         backlog = self.judge.drain_remarks(stream, topic)
         if backlog:
             lines = []
@@ -469,16 +469,16 @@ class ClaudeResident:
                 lines.append(f"  {mark} [{fmt_log_time(n['ts'])}] "
                              f"re {n.get('about', '?')}: {n['remark']}")
             content_blocks.append({"type": "text", "text":
-                "<franks_notes>\nFrank, on messages he handled while you "
-                "were away (· = he declined it for you, » = he passed it "
-                "through). He is the only one who sees what you don't:\n"
+                "<franks_notes>\nFrank's asides on messages since your last "
+                "turn here (· = he didn't wake you for it, » = he did). The "
+                "messages themselves are in <interim_messages> and "
+                "channels/:\n"
                 + "\n".join(lines) + "\n</franks_notes>"})
 
         if judge_remark:
             remark_text = ("<judge_remark>\n"
-                           "A note from your engagement judge (Haiku / your "
-                           "System 1), which decided this message was worth "
-                           "your attention:\n"
+                           "A note from Frank, your engagement judge, who "
+                           "decided this message was worth a turn:\n"
                            f"{judge_remark}\n"
                            "</judge_remark>")
             content_blocks = content_blocks + [

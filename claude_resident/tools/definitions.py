@@ -3,7 +3,8 @@
 from claude_resident.tools.state_tools import GLOB_MAX_RESULTS as _GLOB_MAX
 from claude_resident.config import (
     DELVETOWN_MAX_POST_CHARS, DELVETOWN_POST_MIN_INTERVAL_S,
-    DELVETOWN_ACTS_PER_HOUR, DELVETOWN_MAX_BIO_CHARS)
+    DELVETOWN_ACTS_PER_HOUR, DELVETOWN_MAX_BIO_CHARS,
+    MODEL_IDS, MODEL_CATALOG)
 
 GLOB_MAX_RESULTS_DOC = _GLOB_MAX
 
@@ -636,10 +637,13 @@ TOOL_DEFINITIONS = [
                 "model": {
                     "type": "string",
                     "description": (
-                        "Which model. Aliases: 'haiku' (fast/cheap), 'sonnet' "
-                        "(default — the workhorse for blind GM calls), 'opus' "
-                        "(most capable). Or pass a full model id verbatim. "
-                        "Defaults to 'sonnet'.")
+                        "Which model (default 'sonnet'). A family name means "
+                        "its newest: "
+                        + ", ".join(f"'{a}' = {m}" for a, m in MODEL_IDS.items())
+                        + ". Or any of these ids, every model your plan "
+                        "serves:\n"
+                        + "\n".join(f"- {m}: {d}"
+                                     for m, d in MODEL_CATALOG.items()))
                 },
                 "max_tokens": {
                     "type": "integer",
