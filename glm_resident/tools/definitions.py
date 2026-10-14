@@ -939,20 +939,18 @@ TOOL_DEFINITIONS = [
             "Post a message to Zulip. This is the ONLY way to speak publicly. "
             "Your text output is internal monologue — only send_message posts. "
             "Defaults to the current stream/topic. Use stream/topic overrides "
-            "to post elsewhere. KEEP IT SHORT: the people in these rooms "
-            "average ~110 characters a message. Anything over ~600 is "
-            "refused unless you give allow_long a reason."
+            "to post elsewhere. Messages here usually run short (~110 "
+            "characters); one over ~1,000 is held as a draft so you can trim "
+            "it or post it as is (send_as_is=true)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "allow_long": {
-                    "type": "string",
+                "send_as_is": {
+                    "type": "boolean",
                     "description": (
-                        "Only if the message must exceed ~600 characters: "
-                        "the REASON it must. Someone asked you for a "
-                        "writeup, or it is code. Wanting to say more is not "
-                        "a reason, and the reason is logged."
+                        "Post a long message as written. With no content, "
+                        "posts the draft that was just held for being long."
                     )
                 },
                 "content": {
@@ -974,7 +972,7 @@ TOOL_DEFINITIONS = [
                     )
                 }
             },
-            "required": ["content"]
+            "required": []
         }
     },
     {
@@ -991,13 +989,11 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "allow_long": {
-                    "type": "string",
+                "send_as_is": {
+                    "type": "boolean",
                     "description": (
-                        "Only if the message must exceed ~600 characters: "
-                        "the REASON it must. Someone asked you for a "
-                        "writeup, or it is code. Wanting to say more is not "
-                        "a reason, and the reason is logged."
+                        "Post a long message as written. With no content, "
+                        "posts the draft that was just held for being long."
                     )
                 },
                 "recipient": {
@@ -1012,7 +1008,7 @@ TOOL_DEFINITIONS = [
                     "description": "The message content (Zulip markdown)."
                 }
             },
-            "required": ["recipient", "content"]
+            "required": ["recipient"]
         }
     },
     {

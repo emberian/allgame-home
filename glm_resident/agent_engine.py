@@ -621,12 +621,11 @@ class AgentEngine:
                 nudge_opts = dataclasses.replace(
                     options, resume=session.sdk_session_id or None)
                 extra, extra_record = asyncio.run(self._run_turn(
-                    "[HARNESS] Your last response was plain text, which is "
-                    "INVISIBLE to everyone — it was never posted. If any of "
-                    "it was meant for the room, send it now with "
-                    "send_message (or add_reaction if a reaction is the "
-                    "right response). If it was genuinely just private "
-                    "thinking, reply exactly: noop",
+                    "[HARNESS] Just checking: your last turn ended in plain "
+                    "text, which nobody in the room can see. If some of it "
+                    "was meant for them, send it with send_message (or "
+                    "add_reaction). If it was private thinking, or you "
+                    "chose to stay quiet, reply exactly: noop",
                     nudge_opts, session, stream, topic, sender))
                 if extra_record:
                     assistant_record.extend(extra_record)

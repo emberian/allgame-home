@@ -306,7 +306,7 @@ def _post_chunks(ctx, content, build_payload, log_stream, log_topic, label):
 # reply never meets it; it only catches essays. It is a SOFT limit: a
 # message that genuinely earns the length gets through by naming the reason,
 # which is logged so the excuse can be audited later.
-MESSAGE_SOFT_LIMIT = 600
+MESSAGE_SOFT_LIMIT = 1000
 # Durable audit trail of gate decisions, in the resident's state dir.
 GATE_LOG_FILE = "length_gate.jsonl"
 
@@ -346,40 +346,50 @@ def _record_gate(ctx, chars: int, reason: str | None, allowed: bool):
         pass
 
 
-def _length_gate(content: str, inp: dict, ctx) -> dict | None:
-    """None if this message may be sent; an error dict if it is too long.
+def _length_gate(content: str, inp: dict, ctx, tool: str) -> dict | None:
+    """None if this message goes out now; otherwise HOLD it and say so.
 
-    The escape hatch asks for a REASON rather than a boolean, because a
-    boolean is free and a sentence is not: "someone asked me for a writeup"
-    is a reason, "I had more to say" is not one, and requiring it to be
-    written down is most of what stops it being used reflexively.
+    Over the limit, the message is kept as a draft on the turn's context and
+    not posted. The resident then either revises (calls the tool again with
+    new text) or posts the held draft exactly as written with
+    send_as_is=true — without having to repeat it.
+
+    The first version refused outright ("NOT SENT … Cut it …") and demanded
+    the whole message back with an allow_long reason. On 2026-10-13 its log
+    showed 180 refusals for Kestrel alone, at a median of 717 characters —
+    replies a little over the line, rewritten under a reprimand, not essays
+    caught. The limit is 1,000 now, and a long message is a draft with a
+    choice, not a failure.
     """
     if len(content) <= MESSAGE_SOFT_LIMIT:
         return None
-    reason = str(inp.get("allow_long") or "").strip()
-    if reason:
-        logger.info(
-            f"Long message allowed ({len(content)}c in "
-            f"#{ctx.stream}>{ctx.topic}): {reason[:140]}")
-        _record_gate(ctx, len(content), reason, allowed=True)
+    if inp.get("send_as_is") or str(inp.get("allow_long") or "").strip():
+        _record_gate(ctx, len(content),
+                     str(inp.get("allow_long") or "") or "sent as is", allowed=True)
         return None
-    logger.info(
-        f"Length gate REFUSED a {len(content)}c message in "
-        f"#{ctx.stream}>{ctx.topic} (limit {MESSAGE_SOFT_LIMIT})")
+    held = getattr(ctx, "held_drafts", None)
+    if held is None:
+        held = ctx.held_drafts = {}
+    held[tool] = dict(inp, content=content)
+    logger.info(f"Length gate HELD a {len(content)}c {tool} in "
+                f"#{ctx.stream}>{ctx.topic} (limit {MESSAGE_SOFT_LIMIT})")
     _record_gate(ctx, len(content), None, allowed=False)
     return {"content": (
-        f"NOT SENT — {len(content)} characters, and the limit for an "
-        f"unrequested message is {MESSAGE_SOFT_LIMIT}.\n\n"
-        f"For scale: the humans in these rooms average ~110 characters a "
-        f"message and 90% of what they write is under ~350. This room has "
-        f"asked for replies that length.\n\n"
-        f"Cut it to the one thing most worth saying and call send_message "
-        f"again. Most of what you just wrote is probably a second and third "
-        f"point that could be their own messages later, if anyone bites.\n\n"
-        f"If it genuinely needs the length — someone asked you for a "
-        f"writeup, or it is code — call again with allow_long set to the "
-        f"reason. 'I had more to say' is not one."),
-        "is_error": True}
+        f"Held as a draft, not posted yet — {len(content)} characters, which "
+        f"is long for these rooms (most messages here run ~110). Your call: "
+        f"trim it and call {tool} again, or post it exactly as written with "
+        f"{tool}(send_as_is=true) — no need to repeat the text.")}
+
+
+def _take_draft(inp: dict, ctx, tool: str) -> tuple[dict, str | None]:
+    """send_as_is with no content means: post the draft held for this tool."""
+    if inp.get("send_as_is") and not (inp.get("content") or "").strip():
+        draft = (getattr(ctx, "held_drafts", None) or {}).pop(tool, None)
+        if not draft:
+            return inp, (f"No held draft to send — {tool} has nothing waiting "
+                         f"this turn. Pass content to send something new.")
+        return dict(draft, send_as_is=True), None
+    return inp, None
 
 
 def _h_game_status(inp, ctx):
@@ -396,12 +406,15 @@ def _h_game_setup(inp, ctx):
 
 def _h_send_message(inp, ctx):
     """Post a message to Zulip, splitting into multiple messages if too long."""
+    inp, err = _take_draft(inp, ctx, "send_message")
+    if err:
+        return {"content": err, "is_error": True}
     content = inp.get("content", "").strip()
     if not content:
         return {"content": "Empty message — nothing to send.", "is_error": True}
-    too_long = _length_gate(content, inp, ctx)
-    if too_long:
-        return too_long
+    held = _length_gate(content, inp, ctx, "send_message")
+    if held:
+        return held
     stream = inp.get("stream", ctx.stream)
     topic = inp.get("topic", ctx.topic)
     msg_type = ctx.message.get("type", "stream")
@@ -477,12 +490,15 @@ def _resolve_recipients(recipient: str, zulip) -> tuple[list[int], list[str]]:
 
 def _h_send_dm(inp, ctx):
     """Send a private (direct) message to one or more recipients by name/email."""
+    inp, err = _take_draft(inp, ctx, "send_dm")
+    if err:
+        return {"content": err, "is_error": True}
     content = inp.get("content", "").strip()
     if not content:
         return {"content": "Empty message — nothing to send.", "is_error": True}
-    too_long = _length_gate(content, inp, ctx)
-    if too_long:
-        return too_long
+    held = _length_gate(content, inp, ctx, "send_dm")
+    if held:
+        return held
     recipient = (inp.get("recipient") or "").strip()
     if not recipient:
         return {"content": "No recipient given.", "is_error": True}

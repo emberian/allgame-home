@@ -120,8 +120,8 @@ def maybe_take_turn(resident) -> bool:
         f"say it in the room @-mentioning whoever is up next. If you are "
         f"genuinely blocked — waiting on dice, a ruling, or a board that "
         f"has not been restated — say THAT in the room instead, naming who "
-        f"you are waiting on. Either way the game moves; a silent turn is "
-        f"the one outcome that helps nobody.")
+        f"you are waiting on. And if you'd rather sit this round out, "
+        f"say so or pass the turn — that keeps the game moving too.")
     try:
         game_tools.mark_nudged(game.get("game"))
         resident.agent_engine.respond(
