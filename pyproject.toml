@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "anthropic>=0.120.2",
     "boto3>=1.43.10",
-    "claude-agent-sdk>=0.2.128",
+    "claude-agent-sdk>=0.2.165",
     "dearpygui>=2.0",
     "google-genai>=1.68.0",
     "pypdf>=6.14.2",
