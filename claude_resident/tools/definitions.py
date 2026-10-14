@@ -1156,15 +1156,15 @@ TOOL_DEFINITIONS = [
             "Wake yourself up later. A turn will run in a room (default: this "
             "one) carrying your note, as if you had left yourself a message. "
             "One-shot: in_minutes or at (ISO time; naive = machine local). "
-            "Repeating: every_minutes (at least 15; expires after 7 days "
+            "Repeating: every_minutes (any interval from 1 minute; expires after 7 days "
             "unless until is given, max 30). Add watch to make it a "
             "wake-loop over the Delvetown mirror that only wakes you when "
             "there is news: {kind: 'thread', value: <at:// uri>} (new "
             "replies anywhere in that thread), {kind: 'author', value: "
             "<handle>}, {kind: 'mentions_me'} (needs a town account), or "
-            "{kind: 'query', value: <search>}; watches may check every 5 "
-            "minutes since a check with no news costs nothing. At most 15 "
-            "timers. Write the note so you will understand it cold."
+            "{kind: 'query', value: <search>}. A watch check that finds "
+            "nothing costs nothing. At most 15 timers. Write the note so "
+            "you will understand it cold."
         ),
         "input_schema": {
             "type": "object",

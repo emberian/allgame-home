@@ -20,8 +20,8 @@ turn in its room, run the way the turn clock runs one; the resident speaks
 (or doesn't) through send_message like any other turn.
 
 Every wake is a paid turn, so the bounds are real: at most MAX_ACTIVE timers
-each, repeats no more often than MIN_EVERY_S (watches may check every
-MIN_WATCH_EVERY_S because a check that finds nothing costs nothing), and
+each, repeats no more often than once a minute (the loop's own
+granularity; a watch check that finds nothing costs nothing), and
 repeats expire after DEFAULT_LIFETIME_S unless given `until`.
 """
 
@@ -41,8 +41,11 @@ TIMERS_FILE = "timers.json"
 MAX_ACTIVE = 15
 MIN_DELAY_S = 60
 MAX_AHEAD_S = 30 * 86400
-MIN_EVERY_S = 15 * 60
-MIN_WATCH_EVERY_S = 5 * 60
+# 1 minute: the loop checks every 30s, so this is the practical floor.
+# Was 15 min (5 for watches) until 2026-10-13 — Ember: "there doesn't
+# need to be a 15 min floor" after Yue had to round a prime down to 15.
+MIN_EVERY_S = 60
+MIN_WATCH_EVERY_S = 60
 DEFAULT_LIFETIME_S = 7 * 86400
 MAX_LIFETIME_S = 30 * 86400
 CHECK_S = 30
