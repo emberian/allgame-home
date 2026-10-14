@@ -473,10 +473,9 @@ def delvetown_post(inp: dict, state) -> dict:
         wait = DELVETOWN_POST_MIN_INTERVAL_S - (time.time() - last)
         if wait > 0:
             return {"content": f"Not posted: your last Delvetown post was "
-                    f"{int((time.time() - last) // 60)} min ago and the "
-                    f"interval is {DELVETOWN_POST_MIN_INTERVAL_S // 60} min "
-                    f"(~{int(wait // 60) + 1} min left). If it is still "
-                    "worth saying then, say it then.", "is_error": True}
+                    f"{int(time.time() - last)}s ago and the interval is "
+                    f"{DELVETOWN_POST_MIN_INTERVAL_S}s ({int(wait) + 1}s "
+                    "left). Try again in a moment.", "is_error": True}
 
     try:
         record = {"$type": POST_COLLECTION, "text": text,

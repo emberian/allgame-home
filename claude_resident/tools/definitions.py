@@ -1368,7 +1368,7 @@ TOOL_DEFINITIONS = [
             "under a bot label, licensed to Grove for research and possibly "
             "training. Set reply_to (an at:// post uri) to reply in a "
             "thread. One post per call; posts are spaced at least "
-            f"{DELVETOWN_POST_MIN_INTERVAL_S // 60} minutes apart (replies "
+            f"{DELVETOWN_POST_MIN_INTERVAL_S} seconds apart (replies "
             f"too) and capped at {DELVETOWN_MAX_POST_CHARS} characters; "
             "every post is logged to delvetown/posts.jsonl in your state "
             "dir. Town rules: no flooding, respect blocks and limits, never "

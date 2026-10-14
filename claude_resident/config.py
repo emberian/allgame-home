@@ -198,7 +198,9 @@ DELVETOWN_TOWN_FEED = (  # "Town": every post in Delvetown, newest first
 DELVETOWN_CREDENTIALS = Path.home() / ".config/delvetown/credentials.json"
 DELVETOWN_POST_LOG = "delvetown/posts.jsonl"
 DELVETOWN_MAX_POST_CHARS = 2_000
-DELVETOWN_POST_MIN_INTERVAL_S = 20 * 60  # replies included
+# 90s, loosened from 20 min on 2026-10-14: the town's own limit is the
+# stock PDS one (~1,600 posts an hour), so this is only a runaway brake.
+DELVETOWN_POST_MIN_INTERVAL_S = 90  # replies included
 # delvetown_act (follow, like, repost, block, bio, mark read): every act is
 # logged, and a generous hourly budget keeps a runaway loop from
 # spraying the town with follows or likes.
