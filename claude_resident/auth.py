@@ -37,6 +37,20 @@ _PROBE_CACHE: dict = {"at": 0.0, "rows": []}
 _ACTIVE: dict = {"account": None}
 
 
+def _normalize_probe_row(r: dict) -> dict:
+    """One probe row in the shape the rotation code reads: token_name and
+    quota{status, weekly}. tokeman 0.3.0 (rebuilt 2026-10-14 18:54) renamed
+    them to account and verdict, with weekly at the top level; read as the
+    old names, every account came back status-less, ranked unusable, and
+    rotation logged "every account is rejected" and stayed put."""
+    if "token_name" in r or "account" not in r:
+        return r
+    return {**r, "token_name": r["account"],
+            "quota": {"status": r.get("verdict", "unknown"),
+                      "weekly": r.get("weekly") or {},
+                      "session": r.get("session") or {}}}
+
+
 def probe_accounts(max_age: float = 60.0) -> list[dict]:
     """Ask tokeman how every account is doing. Cached briefly — this shells
     out and gets called on every token read."""
@@ -50,6 +64,7 @@ def probe_accounts(max_age: float = 60.0) -> list[dict]:
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         logger.warning(f"tokeman probe failed: {e}")
         rows = []
+    rows = [_normalize_probe_row(r) for r in rows if isinstance(r, dict)]
     keyed = _usable_accounts()
     if keyed is not None:
         for r in rows:
