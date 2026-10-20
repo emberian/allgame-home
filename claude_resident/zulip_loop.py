@@ -22,6 +22,7 @@ from claude_resident.session_summary import start_session_reaper
 from claude_resident.distill import start_distiller
 from claude_resident.solitude import start_solitude
 from claude_resident.tools.postmark_tools import start_postmark_refresher
+from claude_resident.tools.agentmail_tools import start_email_refresher
 from claude_resident.util import safe_filename
 
 logger = logging.getLogger("zulip_loop")
@@ -318,6 +319,7 @@ def run(resident):
     # Distiller: rolls aged channel history into per-topic semantic hits.
     start_session_reaper(resident)
     start_postmark_refresher(resident.state)
+    start_email_refresher(resident.state)
     start_distiller(resident)
     start_solitude(resident)
 

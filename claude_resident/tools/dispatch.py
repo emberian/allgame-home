@@ -20,6 +20,7 @@ from claude_resident.tools import (
     postmark_tools,
     delvetown_tools,
     town_tools,
+    agentmail_tools,
 )
 
 logger = logging.getLogger("tools.dispatch")
@@ -200,6 +201,18 @@ def _h_delvetown_post(inp, ctx):
 
 def _h_delvetown_act(inp, ctx):
     return delvetown_tools.delvetown_act(inp, ctx.state)
+
+def _h_email_inbox(inp, ctx):
+    return agentmail_tools.email_inbox(inp, ctx.state)
+
+def _h_email_read(inp, ctx):
+    return agentmail_tools.email_read(inp, ctx.state)
+
+def _h_email_send(inp, ctx):
+    return agentmail_tools.email_send(inp, ctx.state)
+
+def _h_email_reply(inp, ctx):
+    return agentmail_tools.email_reply(inp, ctx.state)
 
 def _h_read_tweet(inp, ctx):
     return x_tools.read_tweet(inp)
@@ -577,6 +590,10 @@ _HANDLERS = {
     "delvetown_inbox": _h_delvetown_inbox,
     "delvetown_post": _h_delvetown_post,
     "delvetown_act": _h_delvetown_act,
+    "email_inbox": _h_email_inbox,
+    "email_read": _h_email_read,
+    "email_send": _h_email_send,
+    "email_reply": _h_email_reply,
     "run_mirror_council": _h_run_mirror_council,
     "send_message": _h_send_message,
     "send_dm": _h_send_dm,

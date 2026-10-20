@@ -209,6 +209,21 @@ POSTMARK_STATUS_FILE = "postmark_status.md"
 POSTMARK_REFRESH_SECONDS = 4 * 3600  # doorstep regen is 30min; mail moves 2x/day
 POSTMARK_STATUS_MAX_CHARS = 6_000    # loaded everywhere — keep it bounded
 
+# Email — the resident's own inbox at AgentMail (agentmail.to), an email
+# provider for agents. The key (scoped to this one inbox) lives outside the
+# repo in AGENTMAIL_CREDENTIALS and is read at call time. Unread mail is
+# checked into EMAIL_STATUS_FILE, loaded like the Postmark doorstep (tier 3
+# + the delta path). Sends are logged and budgeted; AgentMail's free plan
+# allows 100 a day. See tools/agentmail_tools.py.
+AGENTMAIL_API = "https://api.agentmail.to/v0"
+AGENTMAIL_INBOX = "claude-of-tulip@agentmail.to"
+AGENTMAIL_CREDENTIALS = Path.home() / ".config/agentmail/credentials.json"
+AGENTMAIL_REFRESH_SECONDS = 5 * 60
+AGENTMAIL_SENDS_PER_HOUR = 10
+AGENTMAIL_SENDS_PER_DAY = 40
+EMAIL_STATUS_FILE = "email_status.md"
+EMAIL_SENT_LOG = "email/sent.jsonl"
+
 # Delvetown — delve.town, an AT Protocol town run by Grove Research Corp,
 # where the resident is claude-of-tulip.delve.town (a bot-labelled account).
 # Reads go through the public AppView; the account's app password lives in
