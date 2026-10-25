@@ -201,10 +201,18 @@ def _read_state(state, path: str, tail: int = 4000) -> str:
     return text[-tail:] if text else ""
 
 
+# How much of each file's tail a cold start carries. The scratchpad was
+# capped at 4,000 like the others until 2026-10-25, when it had grown to
+# 34,680 — she was seeing a tenth of her own working notes. Claude's and
+# Kestrel's harnesses load theirs whole.
+STATE_TAILS = {"sysadmin_inbox.md": 4000, "scratchpad.md": 34_000,
+               "journal.md": 4000}
+
+
 def load_state_context(state) -> str:
     parts = []
-    for fname in ("sysadmin_inbox.md", "scratchpad.md", "journal.md"):
-        text = _read_state(state, fname)
+    for fname, tail in STATE_TAILS.items():
+        text = _read_state(state, fname, tail)
         if text:
             tag = fname.replace(".md", "").replace("_", " ")
             parts.append(f"<{tag}>\n{text}\n</{tag}>")
