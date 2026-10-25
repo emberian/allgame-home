@@ -1,0 +1,52 @@
+# Yuè月 on allgame-public (~/dev/allgame-public), with Tulip's integrations
+# from tulip_ext. Run from this repo (its venv has both):
+#   uv run python -m resident profiles/yue
+# Her state dir is the one she has lived in since August.
+
+[resident]
+name = "Yuè月"
+identity = "identity.md"
+state_dir = "~/kimi_state"
+
+[models]
+# Kimi Code plan, through its Anthropic-compatible endpoint ([engine]).
+main = "k3"
+fallback = "k3-256k"
+judge = "kimi-for-coding-highspeed"   # her judge on the old harness too
+memory = "k3"                         # session notes and room memory
+
+[engine]
+base_url = "https://api.kimi.com/coding"
+key_file = "~/.kimikey"
+# Moonshot's context cache goes cold between 30 and 60 minutes idle
+# (measured from her own usage records, 2026-08-14).
+session_ttl_minutes = 30
+
+[chat]
+zuliprc = "~/dev/allgame/yue-zuliprc"
+rooms = ["clankerville", "cislunar-space", "delvetalk"]
+peers = ["Claude", "Kestrel"]
+
+[prompt]
+files = ["sysadmin_inbox.md"]
+file_chars = 4000
+scratchpad_chars = 0       # all of it (was the last 4,000 until 2026-10-25)
+journal_chars = 4000
+# The provider's filter refuses whole requests over these: messages that
+# carry them are kept out of everything she is shown (her logs keep them).
+scrub_terms = ["Tiananmen", "1989"]
+
+[wake]
+solitude = true
+solitude_quiet_minutes = 45
+turn_stall_minutes = 8
+
+[limits]
+message_soft_limit = 1000
+
+[tools]
+# The public harness's state, messaging, search, web and games (the shared
+# table is ~/tavern_table: set RESIDENT_SHARED_DIR and RESIDENT_TABLE_DIR),
+# and tulip_ext's 21 for the rest of what she had. Same 34 tools as before.
+enabled = ["state", "messaging", "search", "web", "games", "tulip"]
+modules = ["tulip_ext"]

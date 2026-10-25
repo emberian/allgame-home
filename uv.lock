@@ -86,6 +86,7 @@ name = "allgame"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "allgame-public" },
     { name = "anthropic" },
     { name = "boto3" },
     { name = "claude-agent-sdk" },
@@ -102,6 +103,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "allgame-public", editable = "../allgame-public" },
     { name = "anthropic", specifier = ">=0.120.2" },
     { name = "boto3", specifier = ">=1.43.10" },
     { name = "claude-agent-sdk", specifier = ">=0.2.165" },
@@ -115,6 +117,26 @@ requires-dist = [
     { name = "websockets", specifier = ">=16.0" },
     { name = "zulip", specifier = ">=0.9.0" },
 ]
+
+[[package]]
+name = "allgame-public"
+version = "0.1.0"
+source = { editable = "../allgame-public" }
+dependencies = [
+    { name = "claude-agent-sdk" },
+    { name = "requests" },
+    { name = "zulip" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "claude-agent-sdk", specifier = ">=0.2.165" },
+    { name = "requests", specifier = ">=2.31" },
+    { name = "zulip", specifier = ">=0.9" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "annotated-types"
