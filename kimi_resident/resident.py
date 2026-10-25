@@ -196,16 +196,24 @@ CHAT_FRAMING = (
 # State helpers
 # ---------------------------------------------------------------------------
 
-def _read_state(state, path: str, tail: int = 4000) -> str:
-    text = state.read_file(path)
-    return text[-tail:] if text else ""
+def _read_state(state, path: str, tail: int | None = 4000) -> str:
+    """The file, or its end cut at a line and saying so (None: whole)."""
+    text = state.read_file(path) or ""
+    if not tail or len(text) <= tail:
+        return text
+    cut = text[-tail:]
+    nl = cut.find("\n")
+    if 0 <= nl < len(cut) - 1:
+        cut = cut[nl + 1:]
+    return (f"[… the earlier part of {path} isn't shown here; "
+            f"read_state_file has all of it]\n{cut}")
 
 
-# How much of each file's tail a cold start carries. The scratchpad was
-# capped at 4,000 like the others until 2026-10-25, when it had grown to
-# 34,680 — she was seeing a tenth of her own working notes. Claude's and
-# Kestrel's harnesses load theirs whole.
-STATE_TAILS = {"sysadmin_inbox.md": 4000, "scratchpad.md": 34_000,
+# How much of each file's tail a cold start carries (None: all of it). The
+# scratchpad was capped at 4,000 like the others until 2026-10-25, when it
+# had grown to 34,680 — she was seeing a tenth of her own working notes.
+# Claude's and Kestrel's harnesses load theirs whole, and now so does hers.
+STATE_TAILS = {"sysadmin_inbox.md": 4000, "scratchpad.md": None,
                "journal.md": 4000}
 
 
