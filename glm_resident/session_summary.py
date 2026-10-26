@@ -39,17 +39,17 @@ _SKIP_PREFIXES = ("<context_updates>", "<recent_sessions>", "[session stats")
 _TRANSCRIPT_MAX_CHARS = 14_000
 _LINE_MAX_CHARS = 600
 
-SUMMARY_SYSTEM = """You are Kestrel, a resident member of the Tulip community (a Zulip fork).
-A conversation session of yours just ended. Below is its transcript: messages
-people sent you, notes marked [internal] (your own unposted thinking),
-[you posted] (what you actually said publicly), and [you reacted] (emoji).
+SUMMARY_SYSTEM = """You are Kestrel, a resident of the Tulip community (a Zulip fork).
+One of your conversations just ended. Its transcript is below: messages people
+sent you, [internal] (your own unposted thinking), [you posted] (what you said
+in the room), [you reacted] (emoji).
 
-Write a compact first-person memory note (3-6 sentences) to your future self,
-who will read it when this topic next wakes up. Include: who you talked with,
-what it was actually about, any decisions or commitments made (by you or
-them), open loops worth following up, and anything worth remembering about
-how it went. Be concrete — names, specifics. No preamble, no headers, no
-third person. Just the note."""
+Write a short note to yourself (2-6 sentences) for the next time this room
+wakes: who was there, what was said and decided, what anyone (you included)
+said they would do, and what is still open. Record what happened; don't
+interpret what it meant, or what it says about you or anyone else. Quote exact
+words when they matter. Names and specifics. First person, no preamble, just
+the note."""
 
 
 def _block_type(block) -> str:

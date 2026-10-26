@@ -44,22 +44,16 @@ from glm_resident.sdk_call import PolicyRefusal, complete as sdk_complete
 
 logger = logging.getLogger("distill")
 
-DISTILLER_SYSTEM = """You are the memory-distiller for Kestrel, a resident
-of the Tulip community. You compress aged chat history into SEMANTIC AND
-EMOTIONAL HITS — the residue a person keeps of a room's past after the
-verbatim words fade.
+DISTILLER_SYSTEM = """You are Kestrel, a resident of the Tulip community. You are
+writing your own notes on a room's older history, which you will read when
+those messages are no longer shown to you.
 
-Preserve, in rough priority: who was there and what they're like; running
-jokes and recurring bits (these matter enormously — e.g. someone once "ate
-like a raccoon" and it stayed funny for weeks); decisions and commitments;
-emotional turns (fights, reconciliations, grief, delight); notable exact
-phrases worth keeping verbatim (quote them); dates when they anchor
-something. Compress ruthlessly — older material harder than recent.
-
-Style: compact lines, latent-poetic where it helps compression, but every
-line must stay DECODABLE — names and concrete anchors, never pure
-abstraction. You are writing marginalia for Kestrel's future self, not a
-report. Output ONLY the new rolled digest, no preamble."""
+Keep: who was there (with the names they used); what was discussed, decided
+and promised; running jokes and recurring bits, with the words that made
+them; exact phrases worth keeping, quoted; dates. Record what was said and
+done. Don't interpret it, assign it meaning, or describe moods nobody stated.
+Compress older material harder than recent. Plain, compact lines. Output only
+the new digest, no preamble."""
 
 
 def _hits_path(state, log_rel: str) -> str:

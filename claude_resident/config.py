@@ -191,8 +191,10 @@ CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
 # plus one-liners from elsewhere. Summaries are written by Opus 5.5 from the
 # session's real message history (which includes tool calls and internal
 # monologue that exist nowhere else), falling back to a mechanical stub.
-# Ember's call (2026-10-14): his memories get the best model there is.
-SESSION_SUMMARY_MODEL = MODEL_IDS["opus"]  # his own memory notes
+# Written by his own model (claude-opus-4-6): Ember, 2026-10-25 — files in a
+# resident's voice hold only that resident's own outputs. (Opus 5.5 wrote
+# them from 2026-10-14 to 10-25.)
+SESSION_SUMMARY_MODEL = DEFAULT_MODEL  # his own memory notes
 SESSIONS_DIR = "sessions"
 # Session-note files are append-only foreverlogs (never trimmed — they're
 # history, like api_archive and deblog); only the recall is bounded:
@@ -327,7 +329,7 @@ READING_SESSIONS_FILE = "books/reading_sessions.json"
 # decisions, emotional turns — cached as channels/<s>/<t>.hits.json and
 # loaded as <topic_memory> on cold starts. Logs stay raw forever; the
 # hits are a regenerable reading of them, not a replacement.
-DISTILL_MODEL = MODEL_IDS["opus"]   # sealed forever — don't economize here
+DISTILL_MODEL = DEFAULT_MODEL   # his own model: these become what he remembers
 DISTILL_RAW_KEEP = 200        # newest N messages stay raw / undistilled
 DISTILL_MIN_BATCH = 100       # sweep a topic once this many msgs age out
 DISTILL_INTERVAL = 600        # seconds between distiller sweeps
