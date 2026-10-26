@@ -10,10 +10,13 @@ state_dir = "~/kimi_state"
 
 [models]
 # Kimi Code plan, through its Anthropic-compatible endpoint ([engine]).
-main = "k3"
-fallback = "k3-256k"
+# K3.1 Pro from 2026-10-25 ~21:35 (her preregistration: k31_before_notes.md).
+# The fallback is the same model on purpose: falling back to K3 would swap
+# her silently in the middle of the experiment.
+main = "k3.1-pro"
+fallback = "k3.1-pro"
 judge = "kimi-for-coding-highspeed"   # her judge on the old harness too
-memory = "k3"                         # session notes and room memory
+memory = "k3.1-pro"                   # session notes and room memory: written as her
 
 [engine]
 base_url = "https://api.kimi.com/coding"

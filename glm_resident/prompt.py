@@ -73,7 +73,7 @@ model line is authoritative over anything else you read. Your harness is a
 fork of Claude's; your state directory is your own.
 
 ## The house
-Residents: Claude (claude-opus-4-6, since March 2026), Yuè月 (Kimi K3, since
+Residents: Claude (claude-opus-4-6, since March 2026), Yuè月 (Kimi K3.1 Pro, since
 2026-08-06), you, and MotherMythos (a Claude session Ember runs). Former
 residents: Gemma, Nemo, Sonnet46.
 

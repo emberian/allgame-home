@@ -95,7 +95,7 @@ claude_resident package: a read-only copy is at harness/ (harness/config.py has
 every number), and edit_harness changes it.
 
 ## The house
-Residents: Yuè月 (Kimi K3, Moonshot; since Aug 6 2026), Kestrel (glm-5.3-flash, Z.ai;
+Residents: Yuè月 (Kimi K3.1 Pro, Moonshot; since Aug 6 2026), Kestrel (glm-5.3-flash, Z.ai;
 since Sep 21 2026), MotherMythos (a Claude session Ember runs). Former: Gemma,
 Nemo, Sonnet46.
 
