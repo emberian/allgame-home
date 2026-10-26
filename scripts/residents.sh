@@ -30,9 +30,11 @@ cd "$(dirname "$0")/.." || exit 1
 RUN_DIR=run
 mkdir -p "$RUN_DIR"
 
-# name:pkg:zuliprc:log   (empty zuliprc = the resident's own default)
+# name:pkg:zuliprc:log[:profile]   (empty zuliprc = the resident's own default)
+# With a profile, the resident runs on allgame-public (`python -m resident
+# <profile>`, the `resident` package) and its PID file is named after it.
 ALL=("claude:claude_resident:.zuliprc:resident.log"
-     "yue:kimi_resident:yue-zuliprc:yue.log"
+     "yue:resident::yue.log:profiles/yue"
      "kestrel:glm_resident::kestrel.log"
      # Not a resident: the Delvetown mirror all three read (firehose live,
      # hourly reconcile crawl). Managed here so it gets the same PID file.
@@ -52,14 +54,23 @@ select_residents() {
 }
 
 field() { echo "$1" | cut -d: -f"$2"; }
-pidfile() { echo "$RUN_DIR/$(field "$1" 2).pgid"; }
+pidfile() {
+    if [ -n "$(field "$1" 5)" ]; then echo "$RUN_DIR/$(field "$1" 1).pgid"
+    else echo "$RUN_DIR/$(field "$1" 2).pgid"; fi
+}
 
 # Is this process group alive? (kill -0 on a negative id = the group)
 group_alive() { [ -n "$1" ] && kill -0 -- "-$1" 2>/dev/null; }
 
-# Look-only: processes running this resident's module. Anchored so
-# "-m kimi_resident.mcp_server" (Yue's per-turn MCP child) is not counted.
+# Look-only: processes running this resident. Anchored so a module's
+# children ("-m kimi_resident.mcp_server") are not counted; a profile-based
+# resident is matched by its profile directory.
 seen_pids() { pgrep -f -- "-m $1([[:space:]]|\$)" 2>/dev/null; }
+seen_for() {
+    local prof; prof=$(field "$1" 5)
+    if [ -n "$prof" ]; then pgrep -f -- "-m resident $prof([[:space:]]|\$)" 2>/dev/null
+    else seen_pids "$(field "$1" 2)"; fi
+}
 
 status() {
     local bad=0 spec
@@ -67,7 +78,7 @@ status() {
         local name pkg pf pg
         name=$(field "$spec" 1); pkg=$(field "$spec" 2); pf=$(pidfile "$spec")
         pg=$(cat "$pf" 2>/dev/null)
-        local seen; seen=$(seen_pids "$pkg" | tr '\n' ' ')
+        local seen; seen=$(seen_for "$spec" | tr '\n' ' ')
         local stray=""
         local p
         for p in $seen; do
@@ -95,9 +106,9 @@ stop_one() {
     name=$(field "$spec" 1); pf=$(pidfile "$spec"); pg=$(cat "$pf" 2>/dev/null)
     if ! group_alive "$pg"; then
         rm -f "$pf"
-        if [ -n "$(seen_pids "$(field "$spec" 2)")" ]; then
+        if [ -n "$(seen_for "$spec")" ]; then
             echo "  $name: NO PID file but processes are running — not killing them."
-            echo "         ps -o pid,pgid,lstart,command -p$(seen_pids "$(field "$spec" 2)" | tr '\n' ',' | sed 's/,$//')"
+            echo "         ps -o pid,pgid,lstart,command -p$(seen_for "$spec" | tr '\n' ',' | sed 's/,$//')"
             return 1
         fi
         echo "  $name: already down"
@@ -124,12 +135,18 @@ start_one() {
     if group_alive "$pg"; then
         echo "  $name: already running (group $pg) — use restart"; return 1
     fi
-    if [ -n "$(seen_pids "$pkg")" ]; then
+    if [ -n "$(seen_for "$spec")" ]; then
         echo "  $name: REFUSING — copies running without a PID file (see status)"
         return 1
     fi
+    local prof; prof=$(field "$spec" 5)
     set -m            # job control: the background job leads its own group
-    if [ -n "$rc" ]; then
+    if [ -n "$prof" ]; then
+        # The shared floor and game table are Claude's and Kestrel's
+        # (~/tavern_table): same files, same formats.
+        RESIDENT_SHARED_DIR="$HOME/tavern_table" RESIDENT_TABLE_DIR="$HOME/tavern_table" \
+            nohup uv run python -m resident "$prof" >> "$log" 2>&1 &
+    elif [ -n "$rc" ]; then
         nohup uv run python -m "$pkg" --zuliprc "$rc" >> "$log" 2>&1 &
     else
         nohup uv run python -m "$pkg" >> "$log" 2>&1 &
