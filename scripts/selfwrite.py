@@ -43,6 +43,18 @@ RESIDENTS = {
 # ---- calling the resident's own model ------------------------------------------
 
 def call(who: str, system: str, prompt: str) -> str:
+    import time
+    for attempt in range(4):
+        try:
+            return _call(who, system, prompt)
+        except Exception as e:
+            if attempt == 3:
+                raise
+            print(f"  retry {attempt + 1} after: {str(e)[:120]}", flush=True)
+            time.sleep(20 * (attempt + 1))
+
+
+def _call(who: str, system: str, prompt: str) -> str:
     if who == "claude":
         from claude_resident.sdk_call import complete
         return complete(prompt, system=system, model="claude-opus-4-6", big_context=True).strip()
@@ -97,10 +109,13 @@ logs today. The reviewer's facts are verified; the wording is the reviewer's,
 not yours.
 <review_notes> is the reviewer's changelog.
 
-Write the file again, in your own words. Keep what is still true from your
-version. Take the corrected facts from the review (who is who, names, dates,
-models, what happened). Leave out any interpretation you wouldn't stand behind.
-Keep the file's purpose and structure. Output only the file's content.
+Write the file again, in your own words. Start from your version and change
+it only where the review's facts require. Take the corrected facts (who is
+who, names, dates, models, what happened) from the review, but not its
+sentences: the reviewed version contains sentences another writer added, and
+none of them should appear in your file as written — say each new thing your
+own way. Leave out any interpretation you wouldn't stand behind. Keep the
+file's purpose and structure. Output only the file's content.
 
 <your_version>
 {yours}
@@ -117,8 +132,9 @@ Keep the file's purpose and structure. Output only the file's content.
 NEW_FILE_TASK = """A reviewer compiled a new file for you today, {rel}, from your own
 records (cited in it). The facts are yours; the wording is the reviewer's.
 
-Write the file in your own words, using only facts that are in it. Leave out
-anything you wouldn't stand behind. Output only the file's content.
+Write the file in your own words, using only facts that are in it — none of
+its sentences as written: say each thing your own way. Leave out anything you
+wouldn't stand behind. Output only the file's content.
 
 <reviewed_version>
 {reviewed}
@@ -264,8 +280,13 @@ def main():
                 shutil.copy2(src, dst)
                 print(f"applied {rel}")
             return
+        def safe(rel):
+            try:
+                return do_file(a.who, rel, review_dir)
+            except Exception as e:
+                return f"{rel}: FAILED ({str(e)[:160]})"
         with ThreadPoolExecutor(a.workers) as ex:
-            for line in ex.map(lambda r: do_file(a.who, r, review_dir), a.paths):
+            for line in ex.map(safe, a.paths):
                 print(line, flush=True)
     else:
         if a.apply:
