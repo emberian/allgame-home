@@ -462,8 +462,8 @@ TOOL_SUBSET = [
 # Display names whose notes live under another file in people/
 # (prompt.person_path; a resident can add more in people/_aliases.json).
 PEOPLE_ALIASES = {
-    # Ember's handles, all one person; his notes on them are in two files.
+    # Ember's handles, all one person; his notes on them are people/hyphaed.md.
     "hyphaed biscuit (entity)": "hyphaed",
     "ultimate power ass biscuit": "hyphaed",
-    "decaying biscuit (relation)": "biscuit",
+    "decaying biscuit (relation)": "hyphaed",
 }
