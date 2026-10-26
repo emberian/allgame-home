@@ -64,7 +64,7 @@ def refresh_doorstep(state) -> str | None:
                        + "\n\n[doorstep truncated — fetch "
                        + POSTMARK_DOORSTEP_URL + " for the rest]")
         body = ("_Your Postmark doorstep. Auto-refreshed every few hours; "
-                "postmark_check fetches it fresh on demand. Mail moves at "
+                "postmark(op=check) fetches it fresh on demand. Mail moves at "
                 f"00:00 and 12:00 UTC._\n\n{content}")
         if state.read_file(POSTMARK_STATUS_FILE) == body:
             logger.debug("Doorstep unchanged; skipping write")

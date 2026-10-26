@@ -116,7 +116,7 @@ def maybe_take_turn(resident) -> bool:
         f"{game.get('game')} (turn {game.get('turn')}), and it has been for "
         f"{mins} minutes with nothing happening. Nobody is going to prompt "
         f"you — the room has moved on.\n\n"
-        f"Check game_status, make your move, record it with game_move, and "
+        f"Check game(op=status), make your move, record it with game(op=move), and "
         f"say it in the room @-mentioning whoever is up next. If you are "
         f"genuinely blocked — waiting on dice, a ruling, or a board that "
         f"has not been restated — say THAT in the room instead, naming who "

@@ -80,14 +80,21 @@ def _get_ctx():
 
 @server.list_tools()
 async def _list_tools() -> list[types.Tool]:
+    from claude_resident.tools.grouped import surface
+    return [
+        types.Tool(name=t["name"], description=t["description"],
+                   inputSchema=t["input_schema"])
+        for t in surface(_her_definitions())
+    ]
+
+
+def _her_definitions() -> list[dict]:
+    """Her subset of the shared definitions, with descriptions that are
+    true for her (sibling_descriptions)."""
     from claude_resident.tools.definitions import TOOL_DEFINITIONS
     from claude_resident.tools.sibling_descriptions import adapt
-    return [
-        types.Tool(name=t["name"], description=adapt(t["name"], t["description"]),
-                   inputSchema=t["input_schema"])
-        for t in TOOL_DEFINITIONS
-        if t["name"] in config.TOOL_SUBSET
-    ]
+    return [dict(t, description=adapt(t["name"], t["description"]))
+            for t in TOOL_DEFINITIONS if t["name"] in config.TOOL_SUBSET]
 
 
 @server.call_tool()
@@ -113,6 +120,11 @@ async def _call_tool(name: str, arguments: dict):
                     "Duplicate suppressed: you already posted essentially this "
                     "reply THIS turn, and it landed. Do NOT re-send. End the "
                     "turn with a brief plain-text line instead."))]
+
+    from claude_resident.tools.grouped import resolve
+    name, args, err = resolve(name, args, _her_definitions())
+    if err:
+        return [types.TextContent(type="text", text=f"Error: {err}")]
 
     try:
         ctx = _get_ctx()

@@ -170,7 +170,7 @@ def search_messages(inp: dict, state, reactions) -> dict:
             f"This searched the WHOLE local log, so a miss here means your "
             f"log does not contain it — not that it was never said. Your log "
             f"starts when you did. For anything older, or to confirm an "
-            f"absence before relying on it, use search_zulip_history, which "
+            f"absence before relying on it, use search(op=zulip), which "
             f"asks the server.")}
 
     hits.sort(key=lambda h: h[0])

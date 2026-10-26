@@ -364,3 +364,14 @@ MENTION_ONLY_STREAMS = [
     "allgame",
     "gemmazone",
 ]
+
+# Display names whose notes live under another file in people/
+# (prompt.person_path; a resident can add more in people/_aliases.json).
+PEOPLE_ALIASES = {
+    # Ember's handles, all one person; notes live in people/ember.md.
+    "hyphaed biscuit (entity)": "ember",
+    "ultimate power ass biscuit": "ember",
+    "decaying biscuit (relation)": "ember",
+    "dementia biscuit": "ember",
+    "sentyr": "kanzokax",
+}

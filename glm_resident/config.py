@@ -415,10 +415,12 @@ SIBLING_RESIDENTS = ["Claude", "Yuè月", "Kestrel"]
 # in-process MCP server AND `allowed_tools` from that filtered list, so a
 # name absent here is not merely disallowed but never described to him.
 #
+# edit_harness: held back on day one, given 2026-10-25 (Ember's call). His
+# selfmod.py is the shared-repo-safe version: path-limited commits under
+# "Kestrel self-edit:", contained to glm_resident/, and a crash reverts only
+# his own newest edit.
+#
 # Excluded, and why:
-#   edit_harness        self-modification. The most interesting thing to
-#                       hand a resident and the worst thing to hand one on
-#                       day one, before he knows what the harness is for.
 #   invoke_model        nested model calls; earns its place when he GMs.
 #   run_mirror_council  multi-model deliberation — Claude's machinery.
 #   postmark_*          he has no mail address yet (see POSTMARK_HANDLE).
@@ -437,6 +439,8 @@ TOOL_SUBSET = [
     "game_status", "game_move", "game_setup",
     # his own channel (#kestrelspace): describe it, rename its topics
     "shape_space",
+    # his own code
+    "edit_harness",
     # comms
     "send_message", "send_dm", "add_reaction", "send_sysadmin_message",
     # search
@@ -454,3 +458,12 @@ TOOL_SUBSET = [
     # timers and watches: waking yourself up
     "set_timer", "list_timers", "cancel_timer",
 ]
+
+# Display names whose notes live under another file in people/
+# (prompt.person_path; a resident can add more in people/_aliases.json).
+PEOPLE_ALIASES = {
+    # Ember's handles, all one person; his notes on them are in two files.
+    "hyphaed biscuit (entity)": "hyphaed",
+    "ultimate power ass biscuit": "hyphaed",
+    "decaying biscuit (relation)": "biscuit",
+}

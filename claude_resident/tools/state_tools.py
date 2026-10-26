@@ -99,8 +99,8 @@ def read_state_file(inp: dict, state) -> dict:
         # read_text() — an opaque tool failure that cost him the turn. Name the
         # right tool and hand back the listing so the turn isn't wasted.
         listing = list_state_files({"directory": path}, state)
-        return {"content": f"{path} is a directory — use list_state_files "
-                           f"(or glob_state_files) for directories. "
+        return {"content": f"{path} is a directory — use state(op=list) "
+                           f"(or state(op=glob)) for directories. "
                            f"Its contents:\n{listing['content']}",
                 "is_error": True}
     try:
@@ -224,7 +224,7 @@ def edit_state_file(inp: dict, state) -> dict:
 
     full_path = state.root / path
     if not full_path.exists():
-        return {"content": f"File not found: {path}. Use write_state_file to "
+        return {"content": f"File not found: {path}. Use state(op=write) to "
                 f"create it.", "is_error": True}
 
     try:

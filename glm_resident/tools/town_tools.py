@@ -74,7 +74,7 @@ def delvetown_new(inp: dict, state, me_did: str | None = None) -> dict:
     if not since:
         state.write_file(BOOKMARK, json.dumps({"first_seen": now, "set_at": now}))
         return {"content": f"Bookmark planted at {now[:16]}. From here, "
-                "delvetown_new shows everything that arrives after it."}
+                "delvetown(op=new) shows everything that arrives after it."}
     try:
         text, newest = _q().new_since(since, me_did=me_did,
                                       limit=int(inp.get("limit") or 40))

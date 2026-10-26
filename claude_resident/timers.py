@@ -180,7 +180,7 @@ def set_timer(inp: dict, ctx) -> dict:
     with _timers(ctx.state.root) as box:
         if len(box["timers"]) >= MAX_ACTIVE:
             return {"content": f"You already have {MAX_ACTIVE} timers; cancel one "
-                    "first (list_timers).", "is_error": True}
+                    "first (timer(op=list)).", "is_error": True}
         t = {"id": secrets.token_hex(3), "note": note, "stream": stream,
              "topic": topic, "due": due, "every": every_s, "until": until,
              "watch": watch, "created": now, "fires": 0}
@@ -269,7 +269,7 @@ def _prompt(t: dict, news: str | None) -> str:
               f"{news}\n")
     p += ("\nDo what you meant to do. Speaking in the room is optional — if "
           "there is nothing worth saying, say nothing. If this timer no longer "
-          f"serves you, cancel_timer('{t['id']}').")
+          f"serves you, timer(op=cancel, id='{t['id']}').")
     return p
 
 

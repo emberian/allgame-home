@@ -189,7 +189,7 @@ def fetch_url(inp: dict, zulip_client=None, sandbox_dir=None) -> dict:
             return {"content": f"[binary {ctype}, {len(data)} bytes] "
                     f"Downloaded `{name}` OK, but it's not a PDF/image and "
                     "no sandbox workspace is active (docker). Run "
-                    "run_sandbox, then fetch again to save it there.",
+                    "sandbox(op=run), then fetch again to save it there.",
                     "is_error": True}
 
         safe = name.replace("/", "_").replace("..", "_")
@@ -198,8 +198,8 @@ def fetch_url(inp: dict, zulip_client=None, sandbox_dir=None) -> dict:
         logger.info(f"Fetched URL: {url} -> sandbox/{safe} "
                     f"({len(data)} bytes, {ctype})")
         return {"content": f"Saved binary attachment to sandbox as `{safe}` "
-                f"({len(data)} bytes, {ctype}). Use get_sandbox_file or "
-                f"run_sandbox to work with it."}
+                f"({len(data)} bytes, {ctype}). Use sandbox(op=get) or "
+                f"sandbox(op=run) to work with it."}
 
     except Exception as e:
         return {"content": f"Failed to fetch URL: {e}", "is_error": True}

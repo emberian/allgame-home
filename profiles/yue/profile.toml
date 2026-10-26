@@ -28,10 +28,14 @@ rooms = ["clankerville", "cislunar-space", "delvetalk"]
 peers = ["Claude", "Kestrel"]
 
 [prompt]
-files = ["sysadmin_inbox.md"]
-file_chars = 4000
+# Her own identity.md (she keeps it), Ember's mail, and the cross-room board
+# note_crosstopic writes to; the inbox is 4.3k and identity.md 8.4k, so
+# 12,000 shows both whole and the board's recent end.
+files = ["identity.md", "sysadmin_inbox.md", "crosstopic.md"]
+file_chars = 12000
 scratchpad_chars = 0       # all of it (was the last 4,000 until 2026-10-25)
-journal_chars = 4000
+journal_chars = 12000
+people = true
 # The provider's filter refuses whole requests over these: messages that
 # carry them are kept out of everything she is shown (her logs keep them).
 scrub_terms = ["Tiananmen", "1989"]

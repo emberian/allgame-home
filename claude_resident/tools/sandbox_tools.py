@@ -14,7 +14,7 @@ def get_sandbox_file(inp: dict, sandbox_dir: str | None) -> dict:
     if not path or ".." in path or path.startswith("/"):
         return {"content": "Invalid path.", "is_error": True}
     if sandbox_dir is None:
-        return {"content": "No sandbox workspace active. Run run_sandbox first.",
+        return {"content": "No sandbox workspace active. Run sandbox(op=run) first.",
                 "is_error": True}
 
     filepath = Path(sandbox_dir) / path
@@ -47,7 +47,7 @@ def upload_sandbox_file(inp: dict, sandbox_dir: str | None,
     if not path or ".." in path or path.startswith("/"):
         return {"content": "Invalid path.", "is_error": True}
     if sandbox_dir is None:
-        return {"content": "No sandbox workspace active. Run run_sandbox first.",
+        return {"content": "No sandbox workspace active. Run sandbox(op=run) first.",
                 "is_error": True}
 
     filepath = Path(sandbox_dir) / path

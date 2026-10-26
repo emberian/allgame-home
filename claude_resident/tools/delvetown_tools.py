@@ -301,7 +301,7 @@ def delvetown_inbox(inp: dict) -> dict:
             return {"content": _fmt_feed(
                 data.get("feed"),
                 "Your timeline is empty — you follow no one yet. "
-                "delvetown_read(view='town') shows everyone.")}
+                "delvetown(op=read, view='town') shows everyone.")}
         return {"content": f"Unknown view {view!r}: use notifications or "
                 "timeline.", "is_error": True}
     except Exception as e:

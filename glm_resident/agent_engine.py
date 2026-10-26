@@ -71,6 +71,7 @@ from glm_resident.prompt import build_tiered_system_prompt
 from glm_resident.session_summary import recent_sessions_block
 from glm_resident.sandbox import cleanup_sandbox
 from glm_resident.tools.definitions import TOOL_DEFINITIONS
+from claude_resident.tools.grouped import surface as _grouped, resolve as _resolve
 from glm_resident.tools.dispatch import ToolContext, execute_tool
 from glm_resident.util import is_policy_refusal
 
@@ -268,7 +269,7 @@ class AgentEngine:
         AGENT_SDK_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         logger.info(
             f"Agent SDK engine ready: model={AGENT_SDK_MODEL}, "
-            f"{len(TOOL_DEFINITIONS)} tools via in-process MCP"
+            f"{len(_grouped(TOOL_DEFINITIONS))} tools via in-process MCP"
             + (f", Scry attached ({', '.join(scry.TOOLS)}; "
                f"{len(self._scry_disallowed)} denied)"
                if scry_key else ", no Scry key"))
@@ -287,7 +288,11 @@ class AgentEngine:
         worker thread to keep the SDK transport's event loop alive.
         """
         sdk_tools = []
-        for tdef in TOOL_DEFINITIONS:
+        # Grouped tools (state, search, delvetown …, `op` picks the action);
+        # each call resolves back to the original tool against THIS
+        # resident's own definitions, so a group never reaches an op he
+        # doesn't have.
+        for tdef in _grouped(TOOL_DEFINITIONS):
             def _make(name):
                 @tool(name, tdef["description"], tdef["input_schema"])
                 async def _handler(args):
@@ -315,11 +320,14 @@ class AgentEngine:
                             self._turn_sends.append(content)
                             self._turn_visible = True
                         return _mcp_result(result)
+                    real, real_args, err = _resolve(name, args, TOOL_DEFINITIONS)
+                    if err:
+                        return _mcp_result({"content": err, "is_error": True})
                     self.last_progress = time.time()
                     result = await asyncio.to_thread(
-                        execute_tool, name, args, self._ctx)
+                        execute_tool, real, real_args, self._ctx)
                     self.last_progress = time.time()
-                    if (name in VISIBLE_TOOLS
+                    if (real in VISIBLE_TOOLS
                             and not result.get("is_error")):
                         self._turn_visible = True
                     return _mcp_result(result)
@@ -397,7 +405,7 @@ class AgentEngine:
                 system_text += (
                     f"\n\n<reading_notes book=\"{binding['book']}\">\n"
                     f"Your own notes for the book bound to this topic — "
-                    f"update them via edit_state_file as you read "
+                    f"update them via state(op=edit) as you read "
                     f"(books/{binding['book']}/notes.md):\n{notes}\n"
                     f"</reading_notes>")
 
@@ -502,7 +510,7 @@ class AgentEngine:
             # mcp__<server> with no tool suffix is Claude Code's rule for
             # every tool that server lists — the roster is Scry's to grow.
             allowed_tools=[f"mcp__resident__{t['name']}"
-                           for t in TOOL_DEFINITIONS]
+                           for t in _grouped(TOOL_DEFINITIONS)]
                           + [f"mcp__{n}" for n in self._scry_servers],
             disallowed_tools=self._scry_disallowed,  # the roster trim
             permission_mode="bypassPermissions",
@@ -926,7 +934,7 @@ class AgentEngine:
                 parts.append(b["text"])
             elif b.get("type") == "image":
                 parts.append("[an image was attached to this message — "
-                             "if a URL is visible in the text, fetch_url "
+                             "if a URL is visible in the text, web(op=fetch) "
                              "can retrieve it]")
             elif b.get("type") == "document":
                 parts.append("[a PDF was attached to this message]")

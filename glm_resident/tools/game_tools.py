@@ -167,7 +167,7 @@ def game_status(inp: dict, ctx) -> dict:
         games = sorted(p.stem for p in SHARED_ROOT.glob("*.json"))
         if not games:
             return {"content": "No games at the table yet. "
-                               "game_setup(game=..., players=[...]) opens one."}
+                               "game(op=setup, game=..., players=[...]) opens one."}
         lines = []
         for g in games:
             d = _load(g) or {}
@@ -193,11 +193,11 @@ def game_move(inp: dict, ctx) -> dict:
         data = _load(game)
         if data is None:
             return {"content": f"No game called {game!r}. Open it with "
-                               f"game_setup first.", "is_error": True}
+                               f"game(op=setup) first.", "is_error": True}
         if data.get("finished"):
             return {"content": (
                 f"{game} is over — {data.get('finished')}. Reopen it with "
-                f"game_setup(finished=\"\") if that is wrong."),
+                f"game(op=setup, finished=\"\") if that is wrong."),
                 "is_error": True}
         players = data.get("players", [])
         me = _match_player(getattr(ctx, "display_name", "") or "", players)
@@ -214,7 +214,7 @@ def game_move(inp: dict, ctx) -> dict:
                 f"NOT YOUR TURN — it is **{current}**'s move in {game} "
                 f"(turn {data.get('turn', 1)}).\n\n"
                 f"Nothing was recorded. If {current} is stuck or the pointer "
-                f"is wrong, say so in the room, or use game_setup "
+                f"is wrong, say so in the room, or use game(op=setup) "
                 f"(current=...) to correct it deliberately — a correction is "
                 f"logged as one."), "is_error": True}
 

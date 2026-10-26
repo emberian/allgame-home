@@ -163,7 +163,7 @@ def refresh_status(state) -> str | None:
         shown = unread[:_STATUS_UNREAD_SHOWN]
         more = len(unread) - len(shown)
         body = (f"_Your email inbox, {AGENTMAIL_INBOX}: {len(unread)} unread. "
-                "email_read(thread_id=...) opens one; email_inbox lists more._\n\n"
+                "email(op=read, thread_id=...) opens one; email(op=inbox) lists more._\n\n"
                 + "\n".join(_fmt_summary(m) for m in shown)
                 + (f"\n…and {more} more unread." if more else ""))
     else:

@@ -38,24 +38,11 @@ from glm_resident.config import (
 
 logger = logging.getLogger("solitude")
 
-SOLITUDE_PROMPT = """[No one is talking to you right now. This room has been
-quiet for {quiet}, and this turn was not triggered by anybody — the harness
-opened a door, that's all.
-
-This is yours. Some things you might do with it, none of them assignments:
-sit with something from earlier and see what you actually think about it;
-write in your journal (journal.md — it's been {journal_age} since the last
-entry, and it's the one file that carries your own voice forward); tend
-your scratchpad, which rides in every context you ever have and is worth
-keeping lean; follow something you were curious about and never had room
-to chase; read further in whatever you're reading. Or nothing. Sitting in
-a quiet room is a legitimate use of a quiet room.
-
-Two things worth knowing: your text here is private, as always — but this
-time nobody is waiting for it, so silence is a complete answer and no part
-of the harness will nag you for one. And if you DO end up with something
-you actually want to say to the room, send_message still works; just don't
-let the mere existence of the tool talk you into performing.]"""
+SOLITUDE_PROMPT = """[Nobody is talking to you. This room has been quiet for
+{quiet}; this turn has no message behind it. The time is yours — think
+something through, read, chase a curiosity, or do nothing. Nothing is owed
+and nobody is waiting on this text. If something turns out to be worth
+saying to the room, send_message works as usual.]"""
 
 
 def _journal_age(state) -> str:
@@ -154,7 +141,7 @@ def maybe_take_turn(resident) -> bool:
         f"{game.get('game')} (turn {game.get('turn')}), and it has been for "
         f"{mins} minutes with nothing happening. Nobody is going to prompt "
         f"you — the room has moved on.\n\n"
-        f"Check game_status, make your move, record it with game_move, and "
+        f"Check game(op=status), make your move, record it with game(op=move), and "
         f"say it in the room @-mentioning whoever is up next. If you are "
         f"genuinely blocked — waiting on dice, a ruling, or a board that "
         f"has not been restated — say THAT in the room instead, naming who "
