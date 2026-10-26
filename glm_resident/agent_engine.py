@@ -62,6 +62,7 @@ from glm_resident.config import (
     PERSISTENT_SESSION_MAX_TOKENS,
     AGENT_SDK_CONFIG_DIR,
     MAX_TOOL_TURNS,
+    SOLITUDE_MAX_TOOL_TURNS,
     READING_SESSIONS_FILE,
     DEFAULT_STANDING_STREAMS,
     CROSS_STREAM_PER_STREAM_TOKENS,
@@ -504,7 +505,7 @@ class AgentEngine:
             # 0.2.128, 2026-09-21). `effort` is the lever that works — see
             # config.EFFORT for the measurements behind this value.
             **({"effort": EFFORT} if EFFORT else {}),
-            max_turns=MAX_TOOL_TURNS,
+            max_turns=SOLITUDE_MAX_TOOL_TURNS if solitude else MAX_TOOL_TURNS,
             mcp_servers={"resident": self._server, **self._scry_servers},
             tools=[],  # no Claude Code host tools — his jailed surface only
             # mcp__<server> with no tool suffix is Claude Code's rule for

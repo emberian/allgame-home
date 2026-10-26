@@ -82,6 +82,9 @@ MAX_RESPONSE_TOKENS = 16000   # raising further requires streaming (SDK rejects
 THINKING_BUDGET = 10000  # tokens for internal reasoning (not shown to users)
 COOLDOWN_SECONDS = 3  # minimum gap between responses to avoid firehose behavior
 MAX_TOOL_TURNS = 30  # maximum tool-calling iterations per response
+# Quiet turns are where he builds things (the Torchship rulebook, 2026-10-25),
+# and 30 steps cut him off mid-file twice in one evening. Cheap on flash.
+SOLITUDE_MAX_TOOL_TURNS = 80
 SANDBOX_IMAGE = "claude-sandbox"
 SANDBOX_TIMEOUT = 120  # seconds for compilation + execution
 SANDBOX_MEMORY = "2g"
