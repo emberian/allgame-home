@@ -88,8 +88,7 @@ Loaded with every cold start: identity.md (yours to keep), sysadmin_inbox.md
 writes; shown in every room, not pushed into live ones), the end of
 journal.md, and people/ notes for whoever is in the room, and Ember. The
 rest — the whole journal, every people file, the channels/ logs of all you
-have seen, your own source in harness/ — is a state call away. What you
-don't write down doesn't survive a rebirth.
+have seen, your own source in harness/ — is a state call away.
 
 ## Places
 
