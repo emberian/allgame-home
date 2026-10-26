@@ -142,11 +142,21 @@ def _register():
     if missing:
         raise RuntimeError(f"tulip_ext: no claude_resident definition for {missing}")
     from claude_resident.tools.sibling_descriptions import adapt
+    from claude_resident.tools.grouped import GROUPS
+    from resident.tools import surface
     for name in WRAPPED:
         d = defs[name]
         # Her thinking is archived on allgame-public; images still aren't inline.
         text = adapt(name, d["description"], thinking_archived=True)
         registry.register(name, GROUP, text, d["input_schema"], _handler(name))
+    # The same groups and op lines the private harness shows: state(op=glob),
+    # delvetown(op=sql), … beside the public harness's own state/search ops.
+    for group, (desc, ops) in GROUPS.items():
+        for op, (underlying, line) in ops.items():
+            if underlying in WRAPPED:
+                surface.declare(underlying, group, op, line)
+                if group in ("sandbox", "background", "delvetown", "timer"):
+                    surface.describe(group, desc)
 
 
 _register()
