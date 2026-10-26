@@ -50,7 +50,7 @@ THINKING_ONLY_MARKER = "thinking content without any text"
 
 
 def _merge_thinking_policy(cfg: str) -> str:
-    """Force effort=medium, keep=off into the [thinking] table of a config
+    """Force effort=high, keep=off into the [thinking] table of a config
     (created if absent). Merges into an existing table — a second [thinking]
     table would be invalid TOML."""
     def _set(c, key, value):
@@ -59,8 +59,8 @@ def _merge_thinking_policy(cfg: str) -> str:
         return re.sub(r"(?m)^\[thinking\]\s*$",
                       f"[thinking]\n{key} = {value}", c, count=1)
     if re.search(r"(?m)^\[thinking\]\s*$", cfg):
-        return _set(_set(cfg, "effort", '"medium"'), "keep", '"off"')
-    return cfg + '\n[thinking]\neffort = "medium"\nkeep = "off"\n'
+        return _set(_set(cfg, "effort", '"high"'), "keep", '"off"')
+    return cfg + '\n[thinking]\neffort = "high"\nkeep = "off"\n'
 
 
 class KimiEngine:
@@ -110,8 +110,9 @@ class KimiEngine:
             f"disabled = {json.dumps(config.DISABLED_BUILTINS)}\n"
         )
 
-        # Turn economics: medium effort keeps multi-minute mega-thinks (and
-        # thinking-only budget exhaustion) off the table; keep=off stops
+        # Turn economics: effort was "medium" to keep multi-minute mega-thinks
+        # off the table, but k3 only takes low/high/max and the CLI ran "high"
+        # anyway (her wire log, 2026-10-25) — so the config says high. keep=off stops
         # prior turns' reasoning being re-sent every turn — the session
         # files were growing ~1MB/day and turns slowing with them.
         user_cfg = _merge_thinking_policy(user_cfg)

@@ -76,6 +76,9 @@ DISABLED_BUILTINS = [
     "ExitPlanMode", "FetchURL", "GetGoal", "Glob", "Grep", "Read",
     "ReadMediaFile", "SetGoalBudget", "Skill", "TaskList", "TaskOutput",
     "TaskStop", "TodoList", "UpdateGoal", "WebSearch", "Write",
+    # Seen in her tool list on 2026-10-25 (CLI 2.3): a denylist misses
+    # whatever the CLI adds next.
+    "WaitFor", "NotifyUser", "TowerInit", "TowerStatus", "TowerTeardown",
 ]
 
 # Terms that must not cross into the model's context: the provider-side

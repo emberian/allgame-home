@@ -81,8 +81,9 @@ def _get_ctx():
 @server.list_tools()
 async def _list_tools() -> list[types.Tool]:
     from claude_resident.tools.definitions import TOOL_DEFINITIONS
+    from claude_resident.tools.sibling_descriptions import adapt
     return [
-        types.Tool(name=t["name"], description=t["description"],
+        types.Tool(name=t["name"], description=adapt(t["name"], t["description"]),
                    inputSchema=t["input_schema"])
         for t in TOOL_DEFINITIONS
         if t["name"] in config.TOOL_SUBSET
@@ -94,6 +95,13 @@ async def _call_tool(name: str, arguments: dict):
     from claude_resident.tools.dispatch import execute_tool
 
     args = arguments or {}
+
+    # The Kimi CLI's tool-argument wrapper sometimes leaks a closing
+    # </content> into what she writes; 24 of her people notes ended in one
+    # (2026-10-25). It is never meant as file content.
+    for key in ("content", "new_string"):
+        if isinstance(args.get(key), str) and args[key].rstrip().endswith("</content>"):
+            args[key] = args[key].rstrip()[:-len("</content>")].rstrip() + "\n"
 
     # Duplicate-send guard (ported from agent_engine): refuse a near-identical
     # re-send within the same turn and say how to end the turn instead.

@@ -141,9 +141,12 @@ def _register():
     missing = [n for n in WRAPPED if n not in defs]
     if missing:
         raise RuntimeError(f"tulip_ext: no claude_resident definition for {missing}")
+    from claude_resident.tools.sibling_descriptions import adapt
     for name in WRAPPED:
         d = defs[name]
-        registry.register(name, GROUP, d["description"], d["input_schema"], _handler(name))
+        # Her thinking is archived on allgame-public; images still aren't inline.
+        text = adapt(name, d["description"], thinking_archived=True)
+        registry.register(name, GROUP, text, d["input_schema"], _handler(name))
 
 
 _register()
