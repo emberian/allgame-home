@@ -28,6 +28,7 @@ Design invariants:
 import json
 import time
 import asyncio
+from pathlib import Path
 import difflib
 import logging
 import dataclasses
@@ -883,11 +884,16 @@ class AgentEngine:
                     session.sdk_session_id = msg.session_id
 
                 cost = msg.total_cost_usd
+                tokens = _usage_tokens(msg.usage)
                 logger.info(
                     f"Agent SDK turn done: #{stream}>{topic} "
                     f"{msg.num_turns} turns, {msg.duration_api_ms}ms api, "
+                    f"tokens in={tokens['in']} cached={tokens['cached']} "
+                    f"written={tokens['written']} out={tokens['out']}, "
                     f"cost={'plan' if not cost else f'${cost:.4f}'}"
                     + (f", stop={msg.stop_reason}" if msg.stop_reason else ""))
+                _record_usage("claude", stream, topic, AGENT_SDK_MODEL, tokens,
+                              msg.num_turns, cost)
                 if msg.is_error:
                     logger.error(f"Agent SDK result error: {msg.result!r} "
                                  f"{msg.errors!r}")
@@ -954,3 +960,28 @@ class AgentEngine:
                 "api_archive.jsonl", json.dumps(entry) + "\n")
         except Exception as e:
             logger.debug(f"Agent SDK archive write failed: {e}")
+
+
+def _usage_tokens(usage) -> dict:
+    """A turn's token counts (ResultMessage.usage sums every call in it)."""
+    u = usage if isinstance(usage, dict) else {}
+    return {"in": u.get("input_tokens", 0) or 0,
+            "cached": u.get("cache_read_input_tokens", 0) or 0,
+            "written": u.get("cache_creation_input_tokens", 0) or 0,
+            "out": u.get("output_tokens", 0) or 0}
+
+
+def _record_usage(who, stream, topic, model, tokens, steps, cost):
+    """One line per turn in run/usage/<who>.jsonl, for adding up spend later
+    without parsing logs. Best effort."""
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        d = Path(__file__).resolve().parent.parent / "run" / "usage"
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / f"{who}.jsonl", "a") as f:
+            f.write(_json.dumps({"ts": _dt.now(_tz.utc).isoformat(), "room": f"{stream}>{topic}",
+                                 "model": model, "steps": steps, **tokens,
+                                 "cost_usd": round(cost or 0, 6)}) + "\n")
+    except Exception as e:
+        logger.debug(f"usage record failed: {e}")

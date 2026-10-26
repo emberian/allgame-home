@@ -44,16 +44,23 @@ ZAI_BASE_URL = "https://api.z.ai/api/anthropic"
 # Verified callable on this key: glm-5.3, glm-5.3-flash, glm-5, glm-4.6.
 # Verified NOT callable: glm-5.3-flashx.
 #
-# The `flash` tier is the point of this resident — cheap enough to leave
-# running ambiently all day. `glm-5.3` is the full model, kept named but
-# unused so promoting a lane to it is a one-line change rather than a guess.
+# Since 2026-10-25 his turns and his memory writers (session notes, room
+# digests) run on the full `glm-5.3` — Ember's GLM plan covers it. The judge
+# stays on `flash`: it runs on every ambient message and only says yes/no.
 # If a cheaper tier ever gets added to the plan, call it once before
 # wiring it to anything.
 MODEL_IDS = {
     "full": "glm-5.3",
     "flash": "glm-5.3-flash",
 }
-DEFAULT_MODEL = MODEL_IDS["flash"]
+# Z.ai list prices, USD per million tokens: (input, cached input, output),
+# from docs.z.ai/guides/overview/pricing, 2026-10-25. Used only to log what
+# a turn would cost at list price; cache writes are priced as input.
+ZAI_PRICES = {
+    "glm-5.3": (1.40, 0.26, 4.40),
+    "glm-5.3-flash": (0.15, 0.03, 0.50),
+}
+DEFAULT_MODEL = MODEL_IDS["full"]
 # The judge is a cost gate that runs on EVERY ambient message, so it wants
 # the cheapest tier the plan actually serves — which is `flash`, the same
 # model as the main turns.
@@ -196,7 +203,7 @@ CROSSTOPIC_MAX_ENTRIES = 60  # board is loaded everywhere; keep it bounded
 # plus one-liners from elsewhere. Summaries are written by Haiku from the
 # session's real message history (which includes tool calls and internal
 # monologue that exist nowhere else), falling back to a mechanical stub.
-SESSION_SUMMARY_MODEL = MODEL_IDS["flash"]  # his own memory notes
+SESSION_SUMMARY_MODEL = MODEL_IDS["full"]  # his own memory notes
 SESSIONS_DIR = "sessions"
 # Session-note files are append-only foreverlogs (never trimmed — they're
 # history, like api_archive and deblog); only the recall is bounded:
@@ -244,7 +251,7 @@ DELVETOWN_TOWN_FEED = (  # "Town": every post in Delvetown, newest first
 # means nothing to Z.AI. It needs none — glm-5.3-flash accepted a
 # 600k-token request on the first try (measured 2026-09-21), so the
 # inherited budgets below sit well inside its window.
-AGENT_SDK_MODEL = MODEL_IDS["flash"]
+AGENT_SDK_MODEL = MODEL_IDS["full"]
 # Claude sets a fallback because a plan window can slam shut mid-turn.
 # Per-token billing has no such cliff, and pointing a fallback at a
 # DIFFERENT model would silently answer the room in another voice.
@@ -339,7 +346,7 @@ READING_SESSIONS_FILE = "books/reading_sessions.json"
 # decisions, emotional turns — cached as channels/<s>/<t>.hits.json and
 # loaded as <topic_memory> on cold starts. Logs stay raw forever; the
 # hits are a regenerable reading of them, not a replacement.
-DISTILL_MODEL = MODEL_IDS["flash"]  # era volumes are sealed forever —
+DISTILL_MODEL = MODEL_IDS["full"]  # era volumes are sealed forever —
                                     # do not economize on the reading
 DISTILL_RAW_KEEP = 200        # newest N messages stay raw / undistilled
 DISTILL_MIN_BATCH = 100       # sweep a topic once this many msgs age out

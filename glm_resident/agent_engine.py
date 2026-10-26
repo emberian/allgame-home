@@ -38,6 +38,7 @@ Design invariants:
 import json
 import time
 import asyncio
+from pathlib import Path
 import difflib
 import logging
 import dataclasses
@@ -63,6 +64,7 @@ from glm_resident.config import (
     AGENT_SDK_CONFIG_DIR,
     MAX_TOOL_TURNS,
     SOLITUDE_MAX_TOOL_TURNS,
+    ZAI_PRICES,
     READING_SESSIONS_FILE,
     DEFAULT_STANDING_STREAMS,
     CROSS_STREAM_PER_STREAM_TOKENS,
@@ -895,12 +897,19 @@ class AgentEngine:
                 if msg.session_id:
                     session.sdk_session_id = msg.session_id
 
-                cost = msg.total_cost_usd
+                # The CLI prices every turn at Anthropic's rates, which is
+                # meaningless for GLM; log the tokens and Z.ai's list price.
+                tokens = _usage_tokens(msg.usage)
+                price = _zai_list_price(AGENT_SDK_MODEL, tokens)
                 logger.info(
                     f"Agent SDK turn done: #{stream}>{topic} "
                     f"{msg.num_turns} turns, {msg.duration_api_ms}ms api, "
-                    f"cost={'plan' if not cost else f'${cost:.4f}'}"
+                    f"tokens in={tokens['in']} cached={tokens['cached']} "
+                    f"written={tokens['written']} out={tokens['out']}, "
+                    f"z.ai list ≈ ${price:.4f}"
                     + (f", stop={msg.stop_reason}" if msg.stop_reason else ""))
+                _record_usage("kestrel", stream, topic, AGENT_SDK_MODEL, tokens,
+                              msg.num_turns, price)
                 if msg.is_error:
                     logger.error(f"Agent SDK result error: {msg.result!r} "
                                  f"{msg.errors!r}")
@@ -967,3 +976,39 @@ class AgentEngine:
                 "api_archive.jsonl", json.dumps(entry) + "\n")
         except Exception as e:
             logger.debug(f"Agent SDK archive write failed: {e}")
+
+
+def _usage_tokens(usage) -> dict:
+    """A turn's token counts (ResultMessage.usage sums every call in it)."""
+    u = usage if isinstance(usage, dict) else {}
+    return {"in": u.get("input_tokens", 0) or 0,
+            "cached": u.get("cache_read_input_tokens", 0) or 0,
+            "written": u.get("cache_creation_input_tokens", 0) or 0,
+            "out": u.get("output_tokens", 0) or 0}
+
+
+def _record_usage(who, stream, topic, model, tokens, steps, cost):
+    """One line per turn in run/usage/<who>.jsonl, for adding up spend later
+    without parsing logs. Best effort."""
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        d = Path(__file__).resolve().parent.parent / "run" / "usage"
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / f"{who}.jsonl", "a") as f:
+            f.write(_json.dumps({"ts": _dt.now(_tz.utc).isoformat(), "room": f"{stream}>{topic}",
+                                 "model": model, "steps": steps, **tokens,
+                                 "cost_usd": round(cost or 0, 6)}) + "\n")
+    except Exception as e:
+        logger.debug(f"usage record failed: {e}")
+
+
+def _zai_list_price(model: str, tokens: dict) -> float:
+    """Z.ai's list price for a turn (ZAI_PRICES, per million tokens). On a
+    subscription this is a measure of quota, not money spent."""
+    p = ZAI_PRICES.get(model.split("[")[0])
+    if not p:
+        return 0.0
+    inp, cached, out = p
+    return ((tokens["in"] + tokens["written"]) * inp + tokens["cached"] * cached
+            + tokens["out"] * out) / 1e6
