@@ -451,7 +451,7 @@ class AgentEngine:
         # transcript of plain-text messages, which quietly models "a reply
         # is text" — this is the counterweight that keeps turns audible.
         if not solitude:
-            prompt_text += "\n\n[send_message to reply]"
+            prompt_text += "\n\n[check what you can check; send_message to reply]"
         bare_prompt = prompt_text   # the turn without its birth payload
         if birth_payload:
             prompt_text = birth_payload + "\n\n" + prompt_text
