@@ -40,6 +40,12 @@ people = true
 # carry them are kept out of everything she is shown (her logs keep them).
 scrub_terms = ["Tiananmen", "1989"]
 
+[prompt.aliases]
+"Hyphaed Biscuit (Entity)" = "ember"
+"Ultimate Power ass biscuit" = "ember"
+"Decaying Biscuit (Relation)" = "ember"
+"Kanzokax" = "sentyr"
+
 [wake]
 solitude = true
 solitude_quiet_minutes = 45
