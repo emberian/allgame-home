@@ -400,7 +400,7 @@ DISCORD_STREAM_PREFIX = "dc-"
 # bot-to-bot ping-pong: two residents riffing can keep a room busy with
 # nobody in it. Kestrel's own name is filtered out at use time, so this list
 # is the whole family and each fork can carry the same one.
-SIBLING_RESIDENTS = ["Claude", "Yuè月", "Gemma", "Kestrel"]
+SIBLING_RESIDENTS = ["Claude", "Yuè月", "Kestrel"]
 
 # The tools Kestrel gets: claude_resident's 31 minus the ones a newcomer has
 # no business with yet — the same trim Yue was given, and for the same

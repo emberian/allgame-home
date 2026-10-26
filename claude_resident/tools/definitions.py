@@ -665,7 +665,7 @@ TOOL_DEFINITIONS = [
         "description": (
             "Run a command in your persistent background container. "
             "Unlike run_sandbox (ephemeral), this container persists. "
-            "Has network access, Anthropic SDK, 8GB memory, 4 CPU cores, "
+            "Has network access, Anthropic SDK, 4 GB memory, 4 CPU cores, "
             "and read-only access to your state dir at /state. "
             "Use timeout=0 for fire-and-forget. "
             "Use query_background to check on jobs later."

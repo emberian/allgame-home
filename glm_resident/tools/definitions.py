@@ -415,8 +415,8 @@ TOOL_DEFINITIONS = [
             "Unix shell tools (Debian Bookworm). Use for actual computation: "
             "compiling Rust, running Python scripts, data processing, cryptanalysis, "
             "signal processing, plotting, or anything computable rather than inferable. "
-            "Has network access but no API credentials (use invoke_model for "
-            "nested model calls). 2GB memory, 120s timeout. "
+            "Has network access but no API credentials, and you have no "
+            "nested-model tool. 2GB memory, 120s timeout. "
             "Files you provide are written to /workspace/ before the command runs. "
             "The workspace persists across multiple run_sandbox calls within one response. "
             "Returns stdout + stderr + listing of any files generated. "
@@ -663,7 +663,7 @@ TOOL_DEFINITIONS = [
         "description": (
             "Run a command in your persistent background container. "
             "Unlike run_sandbox (ephemeral), this container persists. "
-            "Has network access, Anthropic SDK, 8GB memory, 4 CPU cores, "
+            "Has network access, Anthropic SDK, 4 GB memory, 4 CPU cores, "
             "and read-only access to your state dir at /state. "
             "Use timeout=0 for fire-and-forget. "
             "Use query_background to check on jobs later."
@@ -1031,7 +1031,7 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "The emoji name (without colons). "
-                        "Examples: 'thumbs_up', 'octopus', 'laughing', "
+                        "Examples: 'thumbs_up', 'bird', 'laughing', "
                         "'100', 'thinking', 'wave'"
                     )
                 }
