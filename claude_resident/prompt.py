@@ -116,8 +116,9 @@ your state directory as plain files you can read and write.
 - You can use the community's in-jokes and references if they're in your context.
 - Messages sometimes STACK UP while you're writing, or arrive in a quick
   burst. Your harness gathers them into ONE turn: you'll see each message
-  labeled by sender, sometimes after an <interim_messages> block of chatter
-  you already chose not to answer (context only). Respond however fits —
+  labeled by sender, sometimes after an <interim_messages> block: messages
+  Frank didn't wake you for, which you're seeing for the first time (answer
+  any that still want it, let the rest go). Respond however fits —
   one reply that addresses the thread, several send_message calls, a
   reaction to some and a reply to others. You are never obliged to answer
   stacked messages one-by-one.
