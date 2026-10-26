@@ -17,6 +17,11 @@ nothing shifts.
     python scripts/redistill_eras.py <stream> <topic>            # dry run
     python scripts/redistill_eras.py clankerville tavern --apply
     python scripts/redistill_eras.py clankerville tavern --apply --only 1-14
+    python scripts/redistill_eras.py clankerville tavern --resident kestrel --apply --head
+
+--resident picks whose state and whose distiller/model (claude by default).
+--head also rebuilds the rolling digest (messages head_from..through) in
+one fresh reading, so nothing an older prompt wrote survives in it.
 """
 
 import json
@@ -28,15 +33,25 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from claude_resident.config import DISTILL_MODEL, DISTILL_HITS_MAX_CHARS
-from claude_resident.distill import DISTILLER_SYSTEM
-from claude_resident.sdk_call import complete
+import importlib
 from claude_resident.util import safe_filename
 
-STATE = Path.home() / "claude_state"
+RESIDENTS = {"claude": ("claude_resident", Path.home() / "claude_state"),
+             "kestrel": ("glm_resident", Path.home() / "glm_state")}
+DISTILL_MODEL = DISTILL_HITS_MAX_CHARS = DISTILLER_SYSTEM = complete = STATE = None
 
 
-def rebuild(stream: str, topic: str, only: range | None, apply: bool):
+def use(who: str):
+    """Point the module at one resident's state, distiller prompt and model."""
+    global DISTILL_MODEL, DISTILL_HITS_MAX_CHARS, DISTILLER_SYSTEM, complete, STATE
+    pkg, STATE = RESIDENTS[who]
+    cfg = importlib.import_module(f"{pkg}.config")
+    DISTILL_MODEL, DISTILL_HITS_MAX_CHARS = cfg.DISTILL_MODEL, cfg.DISTILL_HITS_MAX_CHARS
+    DISTILLER_SYSTEM = importlib.import_module(f"{pkg}.distill").DISTILLER_SYSTEM
+    complete = importlib.import_module(f"{pkg}.sdk_call").complete
+
+
+def rebuild(stream: str, topic: str, only: range | None, apply: bool, head: bool = False):
     base = STATE / f"channels/{safe_filename(stream)}/{safe_filename(topic)}"
     log, hits_path = Path(f"{base}.jsonl"), Path(f"{base}.hits.json")
     lines = [l for l in log.read_text().split("\n") if l.strip()]
@@ -94,6 +109,34 @@ def rebuild(stream: str, topic: str, only: range | None, apply: bool):
         print(f"  vol {i}: rebuilt {len(chunk)} msgs, "
               f"{old_len:,} -> {len(new):,} chars")
 
+    if head:
+        lo, hi = int(data.get("head_from", 0)), int(data.get("through", 0))
+        chunk = []
+        for raw in lines[lo:hi]:
+            try:
+                m = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            chunk.append(f"[{m.get('ts','')[:16]}] {m.get('sender','?')}: {m.get('content','')}")
+        if chunk and apply:
+            prompt = (f"Distil these messages of one chat room ({lo}-{hi}) into the digest "
+                      f"described above; there is no prior digest to fold in.\n\n"
+                      f"<history>\n" + "\n".join(chunk) + f"\n</history>\n\n"
+                      f"Hard ceiling: {DISTILL_HITS_MAX_CHARS} characters.")
+            try:
+                new = complete(prompt, system=DISTILLER_SYSTEM, model=DISTILL_MODEL,
+                               big_context=True).strip()[:DISTILL_HITS_MAX_CHARS]
+            except Exception as e:
+                new = ""
+                print(f"  head: FAILED ({e}) — keeping the old one")
+            if new:
+                old_len = len(data.get("hits", ""))
+                data["hits"] = new
+                hits_path.write_text(json.dumps(data) + "\n")
+                print(f"  head: rebuilt {len(chunk)} msgs, {old_len:,} -> {len(new):,} chars")
+        elif chunk:
+            print(f"  head: would rebuild {len(chunk)} msgs ({lo}..{hi})")
+
     print("done" + ("" if apply else "  (dry run — pass --apply)"))
 
 
@@ -103,9 +146,12 @@ if __name__ == "__main__":
     ap.add_argument("topic")
     ap.add_argument("--only", help="volume range, e.g. 1-14")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--head", action="store_true", help="also rebuild the rolling digest")
+    ap.add_argument("--resident", choices=list(RESIDENTS), default="claude")
     a = ap.parse_args()
+    use(a.resident)
     rng = None
     if a.only:
         lo, _, hi = a.only.partition("-")
         rng = range(int(lo), int(hi or lo) + 1)
-    rebuild(a.stream, a.topic, rng, a.apply)
+    rebuild(a.stream, a.topic, rng, a.apply, a.head)
