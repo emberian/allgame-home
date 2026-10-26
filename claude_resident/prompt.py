@@ -6,6 +6,7 @@ import logging
 from claude_resident.config import (
     TOPIC_HISTORY_TOKEN_BUDGET,
     CROSS_STREAM_PER_STREAM_TOKENS,
+    CROSS_STREAM_MAX_AGE_DAYS,
     DEFAULT_STANDING_STREAMS,
     ALLGAME_CORE_FILES,
     ALLGAME_LITE_FILES,
@@ -499,7 +500,7 @@ def build_tiered_system_prompt(state, stream: str, topic: str,
                 continue
             activity = state.get_recent_stream_context(
                 other, max_tokens=CROSS_STREAM_PER_STREAM_TOKENS,
-                reactions=reactions)
+                reactions=reactions, max_age_days=CROSS_STREAM_MAX_AGE_DAYS)
             if activity:
                 tier4_parts.append(
                     f'<recent_stream_activity stream="{other}">'

@@ -4,6 +4,7 @@ import os
 import re
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -474,7 +475,8 @@ class StateManager:
 
     def get_recent_stream_context(self, stream: str, n: int = 100,
                                   reactions: dict[int, dict[str, int]] | None = None,
-                                  max_tokens: int = 0) -> str:
+                                  max_tokens: int = 0,
+                                  max_age_days: float | None = None) -> str:
         # max_tokens == 0 means "no explicit budget, use n". A negative budget
         # means the caller has no room left — it must never fall through to the
         # n-based default (which would return MORE, not less).
@@ -503,6 +505,10 @@ class StateManager:
                     if bound.excludes(m.get("msg_id")):
                         continue
                     all_messages.append(m)
+        if max_age_days:
+            cutoff = (datetime.now(timezone.utc)
+                      - timedelta(days=max_age_days)).isoformat()
+            all_messages = [m for m in all_messages if m.get("ts", "") >= cutoff]
         all_messages.sort(key=lambda m: m.get("ts", ""))
 
         if max_tokens > 0:

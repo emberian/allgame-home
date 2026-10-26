@@ -111,6 +111,12 @@ SESSION_MAX_COUNT = 20  # max concurrent topic sessions in memory
 # buzz reaches DMs and game-room talk reaches tavern. Deliberately an
 # eighth of the old 40k allgame-wide dump — awareness, not immersion.
 CROSS_STREAM_PER_STREAM_TOKENS = 12_000
+# ...and only messages from the last week. Without an age bound a quiet
+# stream shipped its last 12k tokens however old they were: on 2026-10-25
+# Claude's tavern cold start carried gemmazone from March-June (Gemma's
+# meltdown, "I run the allgame campaign") and allgame to Oct 1 — 92k
+# characters of stale self-description, every time.
+CROSS_STREAM_MAX_AGE_DAYS = 7
 SESSION_TRIM_PAIRS = 6  # when trimming, keep last N user/assistant pairs
 MAX_STALE_FILES = 3  # reset session if more than this many state files diverged
 TYPING_HOLDOFF_TIMEOUT = 30  # max seconds to wait for someone to finish typing
