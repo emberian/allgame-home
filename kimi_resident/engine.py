@@ -73,10 +73,10 @@ class KimiEngine:
         self._in_flight = False  # a turn is executing (chat or solitude)
         self._prepare_home()
         self._sessions: dict[str, str] = self._load_sessions()
-        from kimi_resident.mcp_server import _her_definitions
+        from kimi_resident.toolset import her_definitions
         from claude_resident.tools.grouped import surface
         logger.info("Kimi engine ready: model=%s, %d tools via stdio MCP%s",
-                    self.model, len(surface(_her_definitions())),
+                    self.model, len(surface(her_definitions())),
                     ", Scry attached" if self.scry_enabled else ", no Scry key")
         if self.scry_enabled:
             scry.log_probe("yue", scry.api_key())
