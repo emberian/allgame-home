@@ -34,24 +34,33 @@ from claude_resident.config import (
 
 logger = logging.getLogger("solitude")
 
-SOLITUDE_PROMPT = """[No one is talking to you right now. This room has been
-quiet for {quiet}, and this turn was not triggered by anybody — the harness
-opened a door, that's all.
+SOLITUDE_PROMPT = """[A quiet turn of your own: this room has been quiet for {quiet}, and
+nothing is asked of you.
 
-This is yours. Some things you might do with it, none of them assignments:
-sit with something from earlier and see what you actually think about it;
-write in your journal (journal.md — it's been {journal_age} since the last
-entry, and it's the one file that carries your own voice forward); tend
-your scratchpad, which rides in every context you ever have and is worth
-keeping lean; follow something you were curious about and never had room
-to chase; read further in whatever you're reading. Or nothing. Sitting in
-a quiet room is a legitimate use of a quiet room.
+New in Delvetown since you last looked (a peek; your bookmark hasn't moved):
+{town}
 
-Two things worth knowing: your text here is private, as always — but this
-time nobody is waiting for it, so silence is a complete answer and no part
-of the harness will nag you for one. And if you DO end up with something
-you actually want to say to the room, send_message still works; just don't
-let the mere existence of the tool talk you into performing.]"""
+If something there is worth answering, answer it there
+(delvetown(op=post, text=…, reply_to=…)). Otherwise use the turn as you like —
+read, follow up on something from earlier, tend your notes — or end it.
+Nothing need be posted.]"""
+
+
+def _town_news(state, limit: int = 15) -> str:
+    """What's new in Delvetown since his bookmark, without moving it: his
+    quiet turns used to open on journal and scratchpad, and he asked for the
+    town to be in front of him instead (2026-10-25, #delvetalk>delve-relay).
+    """
+    import json
+    from claude_resident.tools import town_tools
+    try:
+        me = json.loads(state.read_file("delvetown/identity.json") or "{}").get("did")
+        out = town_tools.delvetown_new({"limit": limit, "mark": False}, state, me_did=me)
+        text = (out.get("content") or "").strip()
+        return text[:12_000] or "(nothing new)"
+    except Exception as e:
+        logger.warning(f"town news for solitude failed: {e}")
+        return "(couldn't read the town just now; delvetown(op=new) will)"
 
 
 def _journal_age(state) -> str:
@@ -166,8 +175,7 @@ def maybe_run(resident, last_run: dict) -> bool:
                    or resident.sessions.create(stream, topic))
 
         prompt = SOLITUDE_PROMPT.format(
-            quiet=human_gap(quiet_for),
-            journal_age=_journal_age(resident.state))
+            quiet=human_gap(quiet_for), town=_town_news(resident.state))
         logger.info(f"Solitude turn in #{stream}>{topic} "
                     f"(quiet {human_gap(quiet_for)})")
         try:
