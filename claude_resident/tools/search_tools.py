@@ -193,7 +193,11 @@ def search_zulip_history(inp: dict, zulip_client) -> dict:
     topic = inp.get("topic")
     count = min(inp.get("count", 20), 50)
 
-    narrow = [{"operator": "search", "operand": query}]
+    # Special case: query="starred" fetches starred messages
+    if query.strip().lower() == "starred":
+        narrow = [{"operator": "is", "operand": "starred"}]
+    else:
+        narrow = [{"operator": "search", "operand": query}]
     if stream:
         narrow.append({"operator": "channel", "operand": stream})
     if topic:
