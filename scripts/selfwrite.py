@@ -77,6 +77,12 @@ def _call(who: str, system: str, prompt: str) -> str:
     raise ValueError(who)
 
 
+import re as _re
+# A model that thinks it has tools writes them out as text: reject that.
+ARTIFACTS = _re.compile(r"<tool_call>|```json|File written|\*\*[^*\n]*(Result|Query)\*\*|"
+                        r"\"path\": \"|^Let me |\w+ • \w+", _re.M)
+
+
 def unfence(text: str) -> str:
     """Drop a code fence wrapped around the whole answer (```markdown … ```)."""
     t = text.strip()
@@ -102,6 +108,7 @@ def persona(who: str) -> str:
 # ---- files ------------------------------------------------------------------------
 
 FILE_TASK = """This is one of your own files: {rel}.
+You have no tools in this turn; everything you need is below.
 
 <your_version> is the file as you last wrote it, before today's review.
 <reviewed_version> is the same file after a reviewer checked it against your
@@ -131,6 +138,7 @@ file's purpose and structure. Output only the file's content.
 
 NEW_FILE_TASK = """A reviewer compiled a new file for you today, {rel}, from your own
 records (cited in it). The facts are yours; the wording is the reviewer's.
+You have no tools in this turn; everything you need is below.
 
 Write the file in your own words, using only facts that are in it — none of
 its sentences as written: say each thing your own way. Leave out anything you
@@ -173,7 +181,15 @@ def do_file(who: str, rel: str, review_dir: Path) -> str:
         prompt = NEW_FILE_TASK.format(rel=rel, reviewed=live, notes=notes)
     else:
         prompt = FILE_TASK.format(rel=rel, yours=yours, reviewed=live, notes=notes)
-    text = unfence(call(who, persona(who), prompt))
+    for attempt in range(3):
+        text = unfence(call(who, persona(who), prompt))
+        if not ARTIFACTS.search(text) and len(text) > 0.6 * len(live):
+            break
+        print(f"  {rel}: rejected attempt {attempt + 1} "
+              f"({'tool-use text' if ARTIFACTS.search(text) else 'too short — truncated?'})",
+              flush=True)
+    else:
+        raise RuntimeError("no clean rewrite in 3 attempts")
     out = review_dir / rel
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text.rstrip() + "\n")

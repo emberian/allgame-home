@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__tulip__reply",
+      "mcp__tulip__react",
+      "mcp__tulip__zulip"
+    ],
+    "ask": [],
+    "defaultMode": "default"
+  }
+}

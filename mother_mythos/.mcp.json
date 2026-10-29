@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tulip": {
+      "command": "/Users/ember/dev/allgame/.venv/bin/python",
+      "args": ["/Users/ember/dev/allgame/mother_mythos/channel.py"],
+      "env": { "MM_CHANNEL": "${MM_CHANNEL:-0}" }
+    }
+  }
+}
