@@ -3,6 +3,7 @@
 import re
 import json
 import time
+import random
 import logging
 import threading
 from contextlib import contextmanager
@@ -15,7 +16,7 @@ from glm_resident.config import (
     COOLDOWN_SECONDS, MAX_TOOL_TURNS, SESSION_MAX_TOKENS, MAX_STALE_FILES,
     SESSION_TRIM_PAIRS, TYPING_HOLDOFF_TIMEOUT, ALLGAME_CORE_FILES,
     CACHE_TTL, BURST_SWEEP_ROUNDS, BURST_SWEEP_INTERVAL,
-    INTERIM_MESSAGES_MAX_CHARS,
+    INTERIM_MESSAGES_MAX_CHARS, AMBIENT_SAMPLE_RATE,
 )
 from glm_resident import coordination
 from glm_resident.state import StateManager
@@ -229,6 +230,16 @@ class GLMResident:
                 break
 
         for i, m in enumerate(batch if trigger_idx is None else []):
+            # Most ambient chatter never reaches Frank at all: a coin decides
+            # first. Mentions, DMs and his name took the fast path above.
+            if random.random() >= AMBIENT_SAMPLE_RATE:
+                self.judge.last_reason = "ambient, not sampled"
+                self.logger.info(
+                    f"Skipping #{stream}>{topic} from "
+                    f"{m.get('sender_full_name', '?')}: not sampled "
+                    f"({AMBIENT_SAMPLE_RATE:.0%} of ambient reaches the judge)")
+                self.handled.mark(m.get("id"))
+                continue
             if self.judge.should_respond(m, stream):
                 trigger_idx = i
                 # Capture the System-1 remark now, before anything else can

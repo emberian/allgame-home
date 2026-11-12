@@ -53,6 +53,8 @@ def journal_tail(state, max_chars: int = JOURNAL_TAIL_CHARS) -> str:
     identity anchor in the state dir. The tail rides in tier 3 so that voice
     is always in context; the full file stays a read_state_file away.
     """
+    if max_chars <= 0:
+        return ""
     journal = state.read_file("journal.md")
     if not journal:
         return ""
@@ -132,7 +134,7 @@ your own opinions, and don't preface with "As an AI".
 
 ## Memory
 Loaded every turn: identity.md, scratchpad.md, sysadmin_inbox.md (Ember's
-notes to you), the tail of journal.md, crosstopic.md (your board, loaded in
+notes to you), crosstopic.md (your board, loaded in
 every topic; note_crosstopic writes to it and pushes the note to your other
 live topics), and allgame/digest.md. On a cold start you also get this
 topic's distilled older history (<topic_memory>) and its recent messages,

@@ -183,7 +183,18 @@ ALLGAME_LITE_FILES = ("campaign_log.md", "strategy.md")
 # Tail of journal.md loaded into tier 3 everywhere. The journal is the
 # resident's own reflective voice — the highest identity-signal-per-token
 # file in the state dir — and was previously never in context at all.
-JOURNAL_TAIL_CHARS = 24_000
+#
+# 0 since 2026-11-11: no tail is loaded. By then 79 of his 117 entries were
+# quiet-turn checks in one bookkeeping template, and interviews of
+# glm-5.3-flash showed the tail alone put that dialect in 62% of answers
+# (identity alone 25%, the harness prompt alone 4%). What he rereads every
+# turn is what he becomes; the journal stays a state call away.
+JOURNAL_TAIL_CHARS = 0
+
+# Share of AMBIENT messages that even reach Frank (Ember, 2026-11-11).
+# @-mentions, DMs and his own name always get through; this only thins the
+# chatter he is offered a turn on, so he is one voice and not every reply.
+AMBIENT_SAMPLE_RATE = 0.15
 
 # Claude's cross-topic board ("self-mailbox"): a single statefile loaded into
 # every topic's context AND wired into the fingerprint/delta path, so a note
@@ -314,8 +325,8 @@ EFFORT = "medium"
 # the send_message nudge are both suppressed for these, because saying
 # nothing is the correct outcome.
 SOLITUDE_ENABLED = True
-SOLITUDE_QUIET_MINUTES = 45      # room must be this idle first
-SOLITUDE_INTERVAL_HOURS = 6      # at most this often per room
+SOLITUDE_QUIET_MINUTES = 180     # room must be this idle first (45 until 2026-11-11)
+SOLITUDE_INTERVAL_HOURS = 24     # at most this often per room (6 until 2026-11-11)
 SOLITUDE_CHECK_INTERVAL = 300    # seconds between checks
 
 # SLEEP. A persistent room that only ever grows gets flat — at 862k tokens
