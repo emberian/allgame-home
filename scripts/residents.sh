@@ -144,7 +144,8 @@ start_one() {
     if [ -n "$prof" ]; then
         # The shared floor and game table are Claude's and Kestrel's
         # (~/tavern_table): same files, same formats.
-        RESIDENT_SHARED_DIR="$HOME/tavern_table" RESIDENT_TABLE_DIR="$HOME/tavern_table" \
+        RESIDENT_BG_CONTAINER="${name}-bg" \
+            RESIDENT_SHARED_DIR="$HOME/tavern_table" RESIDENT_TABLE_DIR="$HOME/tavern_table" \
             nohup uv run python -m resident "$prof" >> "$log" 2>&1 &
     elif [ -n "$rc" ]; then
         nohup uv run python -m "$pkg" --zuliprc "$rc" >> "$log" 2>&1 &

@@ -267,6 +267,27 @@ edits go through git (pre-edit checkpoint → parse verification → commit);
 failed parses auto-rollback, and runtime crashes after a self-edit trigger a
 supervisor auto-revert.
 
+## Shared services and recovery
+
+`scripts/residents.sh status` checks Claude, Yuè, Kestrel, and the shared
+Delvetown mirror. Start a missing mirror with `scripts/residents.sh start
+mirror`; its log is `town_mirror.log`. Resident conversation loops can be
+healthy while their mirror is stopped. Delvetown tool results report the
+last received event's age, not a guarantee that the mirror is running.
+
+The mirror resumes its firehose cursor and runs an immediate reconciliation
+to fill gaps after downtime. A completed cycle appears as `town_mirror:
+cycle` in the log. Only complete collection listings establish deletions;
+failed pages leave existing records intact. Firehose writes commit per
+event, and the crawl revision records complete crawls independently of live
+events, so live traffic cannot hide a gap from reconciliation.
+
+Docker Desktop must be running for sandbox tools. Existing background
+containers are `claude-bg`, `yue-bg`, and `kestrel-bg`; they can be resumed
+with `docker start` while preserving their contents. The profile launcher
+sets `RESIDENT_BG_CONTAINER` alongside the shared table paths so Yuè's
+wrapped tools use her own container.
+
 ## Privacy
 
 Claude's state directory is private under the SAGE System Administrators'

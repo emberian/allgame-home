@@ -11,15 +11,14 @@ reconnects resume from it, so a restart neither drops nor double-applies
 it says OutdatedCursor and the stream starts live; the crawler's reconcile
 pass closes that gap.
 
-An event the stream cannot fully apply (a commit marked tooBig, whose ops
-are not inlined) leaves the repo's stored rev alone, so reconcile — which
-re-crawls any repo whose rev moved — picks it up.
+The stored repo rev belongs to the last complete crawl. Live events never
+advance it: otherwise a later live event could hide an earlier gap from
+reconcile (an outdated cursor, a tooBig commit, or a malformed frame).
 """
 
 import asyncio
 import json
 import logging
-import time
 
 import libipld
 import websockets
@@ -32,7 +31,6 @@ from town_mirror.db import connect_rw
 logger = logging.getLogger("town_mirror.stream")
 
 URL = PDS.replace("https://", "wss://") + "/xrpc/com.atproto.sync.subscribeRepos"
-COMMIT_EVERY_S = 1.0
 TRACKED = set(COLLECTIONS) | {PROFILE}
 
 
@@ -47,7 +45,6 @@ class Stream:
     def __init__(self):
         self.db = connect_rw()
         self.applied = 0
-        self.last_commit = time.monotonic()
 
     def _ensure_account(self, did: str, now: str):
         self.db.execute(
@@ -55,6 +52,14 @@ class Stream:
             (did, now))
 
     def handle(self, header: dict, body: dict):
+        # An idle firehose may not deliver another frame for minutes. Never
+        # leave its write transaction open while waiting for the next one:
+        # the reconcile connection needs to be able to write too. A failed
+        # frame also rolls back its cursor, so reconnect can replay it.
+        with self.db:
+            self._handle(header, body)
+
+    def _handle(self, header: dict, body: dict):
         t = header.get("t")
         now = _now()
         if header.get("op") == -1:
@@ -86,8 +91,6 @@ class Stream:
                     apply_record(self.db, did, collection, uri,
                                  libipld.encode_cid(cid), value, now)
                     self.applied += 1
-                self.db.execute("UPDATE accounts SET rev = ? WHERE did = ?",
-                                (body.get("rev"), did))
         elif t == "#identity":
             self._ensure_account(did, now)
             if body.get("handle"):
@@ -103,9 +106,6 @@ class Stream:
         if seq is not None:
             _state(self.db, "firehose_seq", seq)
             _state(self.db, "firehose_at", now)
-        if time.monotonic() - self.last_commit >= COMMIT_EVERY_S:
-            self.db.commit()
-            self.last_commit = time.monotonic()
 
     async def run(self):
         backoff = 1
@@ -122,7 +122,10 @@ class Stream:
                             header, body = libipld.decode_dag_cbor_multi(frame)
                             self.handle(header, body)
                         except Exception as e:
-                            logger.warning(f"bad frame: {e}")
+                            # handle() rolled back. Don't get stuck replaying
+                            # a poison frame: the independent crawl revision
+                            # ensures reconcile still sees this repo as changed.
+                            logger.warning(f"bad frame (reconcile will repair): {e}")
             except Exception as e:
                 logger.warning(f"firehose dropped: {type(e).__name__}: {e}")
             self.db.commit()

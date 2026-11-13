@@ -177,7 +177,9 @@ class Crawler:
                 p["cursor"] = cursor
             d = self._get("com.atproto.repo.listRecords", **p)
             if d is None:
-                return None if not out else out
+                # A partial page set cannot establish which records were
+                # deleted. Retry the whole collection next cycle.
+                return None
             out += d.get("records", [])
             cursor = d.get("cursor")
             if not cursor or not d.get("records"):
@@ -190,7 +192,9 @@ class Crawler:
         firehose writes alongside, and holding SQLite's write lock across
         a few hundred HTTP pages for a busy account would stall it."""
         stats = {"posts+": 0, "posts-": 0}
-        desc = self._get("com.atproto.repo.describeRepo", repo=did) or {}
+        desc = self._get("com.atproto.repo.describeRepo", repo=did)
+        if desc is None:
+            raise RuntimeError("describeRepo failed; keeping existing records")
         collections = set(desc.get("collections") or [])
         prof = {}
         if PROFILE in collections:
@@ -252,6 +256,7 @@ class Crawler:
             listed.add(did)
             if not repo.get("active", True):
                 self.db.execute("UPDATE accounts SET active = 0 WHERE did = ?", (did,))
+                self.db.commit()   # do not hold the write lock over the next HTTP crawl
                 continue
             if known.get(did) == repo.get("rev"):
                 continue
@@ -261,6 +266,7 @@ class Crawler:
                 for k in totals:
                     totals[k] += s[k]
             except Exception as e:
+                self.db.rollback()
                 logger.warning(f"crawl {did}: {e}")
         # An account gone from the PDS entirely has taken everything back.
         for did in set(known) - listed:
