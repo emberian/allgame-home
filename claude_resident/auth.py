@@ -43,6 +43,17 @@ def _normalize_probe_row(r: dict) -> dict:
     them to account and verdict, with weekly at the top level; read as the
     old names, every account came back status-less, ranked unusable, and
     rotation logged "every account is rejected" and stayed put."""
+    if r.get("service") == "claude":
+        reading = r.get("reading") or {}
+        status = ((reading.get("detail") or {}).get("claude") or {}).get(
+            "verdict", "unknown")
+        if r.get("parked") or (r.get("login") or {}).get("refused"):
+            status = "rejected"
+        limits = r.get("limits") or []
+        weekly = next((x.get("window") or {} for x in limits
+                       if x.get("span") == "weekly" and x.get("scope") == "all"), {})
+        return {**r, "token_name": r["name"],
+                "quota": {"status": status, "weekly": weekly}}
     if "token_name" in r or "account" not in r:
         return r
     return {**r, "token_name": r["account"],
@@ -60,7 +71,12 @@ def probe_accounts(max_age: float = 60.0) -> list[dict]:
     try:
         out = subprocess.run(["tokeman", "--json"], capture_output=True,
                              text=True, timeout=30)
-        rows = json.loads(out.stdout) if out.returncode == 0 else []
+        payload = json.loads(out.stdout) if out.returncode == 0 else []
+        # The fleet interface is now an envelope shared by all services.
+        # Iterating the envelope's keys silently produced zero accounts.
+        rows = ([r for r in payload.get("accounts", [])
+                 if r.get("service") == "claude"]
+                if isinstance(payload, dict) else payload)
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         logger.warning(f"tokeman probe failed: {e}")
         rows = []
@@ -90,8 +106,8 @@ ACCESS_TOKEN_MARGIN_S = 10 * 60
 def _token_for(entry: dict) -> str | None:
     """The credential to use for one tokeman entry.
 
-    The long-lived `key` when there is one. Otherwise the OAuth
-    access_token, while it is comfortably unexpired: tokeman refreshes
+    Prefer the fresh login access_token, matching tokeman's own credential
+    selection, then fall back to the setup key. tokeman refreshes
     those itself (toot@'s expiry moved forward a week between 2026-10-02
     and 2026-10-12), and the CLI accepts one as CLAUDE_CODE_OAUTH_TOKEN —
     verified on bobb@ 2026-10-12. Treating key-less accounts as unusable,
@@ -100,12 +116,12 @@ def _token_for(entry: dict) -> str | None:
     at its weekly limit, bobb@ sat at 14% with a valid access_token, and
     Claude went silent mid-turn in front of the room with capacity idle.
     """
-    if entry.get("key"):
-        return entry["key"]
+    if entry.get("login_error"):
+        return None
     tok, exp = entry.get("access_token"), entry.get("expires_at")
     if tok and exp and exp / 1000 - time.time() > ACCESS_TOKEN_MARGIN_S:
         return tok
-    return None
+    return entry.get("key") or None
 
 
 def _usable_accounts() -> set[str] | None:
